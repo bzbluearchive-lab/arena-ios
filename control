@@ -1,0 +1,9 @@
+Package: com.local.archeat
+Name: ARCheat (local research build)
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: UE4 iOS overlay research build - local device only
+Maintainer: local
+Author: local
+Section: Tweaks
+Depends: firmware (>= 14.0)
