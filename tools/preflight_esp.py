@@ -73,6 +73,8 @@ INC_RE = re.compile(r'^\s*#\s*(?:include|import)\s+"([^"]+)"', re.M)
 
 def check_includes(files):
     missing = []
+    vendor_missing = set()
+    vendor_dir = os.path.join(ROOT, "vendor", "imgui")
     for f in files:
         p = os.path.join(ROOT, f)
         if not os.path.exists(p):
@@ -83,13 +85,20 @@ def check_includes(files):
                 os.path.normpath(os.path.join(base, inc)),
                 os.path.normpath(os.path.join(ROOT, inc)),
             ]
-            if not any(os.path.exists(c) for c in cand):
-                missing.append((f, inc))
+            if any(os.path.exists(c) for c in cand):
+                continue
+            # 三方头文件来自 vendor/，由 CI 拉取；本地没拉不算失败
+            if inc.startswith("imgui") and not os.path.isdir(vendor_dir):
+                vendor_missing.add(inc)
+                continue
+            missing.append((f, inc))
+    if vendor_missing:
+        warn("vendor 头文件尚未拉取（CI 会自动拉）: " + ", ".join(sorted(vendor_missing)))
     if missing:
         for f, inc in missing:
             fail('include 解析不到: %s -> "%s"' % (f, inc))
     else:
-        ok("所有相对 include 都能解析")
+        ok("所有项目内 include 都能解析")
 
 
 # ---------------------------------------------------------------- 3. 不变量
@@ -108,8 +117,8 @@ def check_invariants(files, mk_src):
     else:
         ok("零写入不变量成立：没有任何 mem::wr() 调用点")
 
-    # 3.2 Aim.mm 不能被链接进来
-    if "Aim.mm" in mk_src.split("ARCheat_CFLAGS")[0]:
+    # 3.2 Aim.mm 不能被链接进来（只看 FILES 解析结果，不看注释）
+    if any(f.endswith("Aim.mm") for f in files):
         fail("Makefile 的 FILES 里包含 Aim.mm —— 会把写内存的代码编进二进制")
     else:
         ok("Aim.mm 未链接（写内存路径不存在于二进制中）")
