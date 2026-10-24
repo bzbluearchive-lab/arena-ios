@@ -12,6 +12,7 @@
 
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
+#import <QuartzCore/CAMetalLayer.h>   // CAMetalDrawable 这个协议声明在这里，QuartzCore.h 不一定带进来
 #import <UIKit/UIKit.h>
 #include <vector>
 #include <atomic>
