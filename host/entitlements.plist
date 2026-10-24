@@ -2,17 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 未沙盒：孵化 daemon 的前提 -->
+	<!--
+	  带界面的 app 只保留“能跑起来 + 能加载自己的 helper”的最小集合。
+
+	  刻意去掉了这两条（它们只该给 daemon 那个无界面工具）：
+	    com.apple.private.security.no-container  → UIKit 拿不到容器会启动瞬间被杀
+	    com.apple.private.cs.debugger / task port → app 自己不需要，且属于高风险项
+	-->
 	<key>platform-application</key><true/>
 	<key>com.apple.private.security.no-sandbox</key><true/>
-	<key>com.apple.private.security.no-container</key><true/>
-
-	<!-- 跨进程读 / 注入 SpringBoard 的前提 -->
-	<key>com.apple.private.cs.debugger</key><true/>
-	<key>task_for_pid-allow</key><true/>
-	<key>com.apple.system-task-ports</key><true/>
-
-	<!-- 加载非系统签名的 dylib -->
 	<key>com.apple.private.skip-library-validation</key><true/>
 	<key>get-task-allow</key><true/>
 	<key>run-unsigned-code</key><true/>
