@@ -1,18 +1,22 @@
-// Overlay.mm —— Metal 呈现层 + ImGui 叠加 + 每帧驱动。
+// Overlay.mm —— Metal 呈现层 + ImGui 叠加 + 每帧驱动
 //
-// 关键设计（针对 ACE）：整个 cheat 的生命周期都挂在游戏自己的渲染回调里，
-// 不新建线程、不开 CADisplayLink、不起定时器。从 anogs 的角度看，进程里的线程数、
+// 关键设计（针对 ACE）：整个显示层的生命周期都挂在游戏自己的渲染回调里，
+// 不新建线程、不开 CADisplayLink、不起定时器。从 anogs 的角度看，进程的线程数、
 // 运行循环、区域映射与未注入时一致，只有"多了一个 dylib"这一点不同。
 //
 // 挂点选择：
-//   -[CAMetalLayer nextDrawable]  ：拿到本帧 drawable（只在需要画的时候才动）
-//   -[CAMetalDrawable present]    ：在游戏提交呈现之前插入我们的一次 render pass，
-//                                    LoadAction=Load 保住游戏已画的像素
+//   -[CAMetalLayer nextDrawable]  ：拿到本帧 drawable
+//   -[<drawable 具体类> present]  ：在游戏提交呈现之前插入我们的一次 render pass，
+//                                   LoadAction=Load 保住游戏已画的像素
 // 两条都是 ObjC 方法，走 method_setImplementation，不碰 __text、不涉及 PAC 指令搬家。
+//
+// 关于 CAMetalDrawable：它是个 @protocol，不同 SDK 版本对它是否随
+// <QuartzCore/CAMetalLayer.h> 带进来并不一致（theos 的 iPhoneOS SDK 上实测不带）。
+// 所以这里不依赖 SDK 里的那个协议，自己声明两个最小协议，用 id<...> 拿类型，
+// 运行时把真实对象 cast 过来即可。这样编译期与 SDK 版本解耦。
 
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
-#import <QuartzCore/CAMetalLayer.h>   // CAMetalDrawable 这个协议声明在这里，QuartzCore.h 不一定带进来
 #import <UIKit/UIKit.h>
 #include <vector>
 #include <atomic>
@@ -21,24 +25,38 @@
 #include "ESP.hpp"
 #include "../Core/Hook.hpp"
 #include "../Core/Obfs.hpp"
-#include "../Core/SafeMem.h"
 #include "../Game/World.hpp"
 #include "../Game/Offsets.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 
+// ---------------- 最小类型约束（不依赖 SDK 的 CAMetalDrawable 声明） ----------------
+@protocol ARDrawable <NSObject>
+- (id<MTLTexture>)texture;
+- (id)layer;
+- (void)present;
+- (void)presentAtTime:(CFTimeInterval)t;
+@end
+
+@protocol ARLayerLike <NSObject>
+- (CGSize)drawableSize;
+- (id<MTLDevice>)device;
+@end
+
+typedef id<ARDrawable> ARDrawableRef;
+
 // ---------------- 全局状态 ----------------
 // 只有"显示开关"，没有任何功能性状态：这个 dylib 不写游戏内存、不改视角。
 static std::atomic<bool> g_on{false};      // 总开关（三指双击切）
 static std::atomic<bool> g_esp{true};
-static CAMetalDrawable* g_drawable = nil;
+static ARDrawableRef g_drawable = nil;
 
 // ---------------- ImGui + Metal ----------------
 struct Renderer {
-    id<MTLDevice>        device = nil;
-    id<MTLCommandQueue>  queue  = nil;
-    bool init = false;
+    id<MTLDevice>       device = nil;
+    id<MTLCommandQueue> queue  = nil;
+    bool  init = false;
     float vpW = 0, vpH = 0;
 };
 static Renderer g_r;
@@ -59,14 +77,14 @@ static void imgui_bringup(id<MTLDevice> dev) {
     g_r.init = true;
 }
 
-static void draw_overlay(CAMetalDrawable* drawable, float vpW, float vpH) {
+static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
     if (!g_r.init || !drawable) return;
 
     id<MTLCommandBuffer> cb = [g_r.queue commandBuffer];
     if (!cb) return;
 
     MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-    rpd.colorAttachments[0].texture     = drawable.texture;
+    rpd.colorAttachments[0].texture     = [drawable texture];
     rpd.colorAttachments[0].loadAction  = MTLLoadActionLoad;    // 保住游戏画面
     rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
 
@@ -74,14 +92,12 @@ static void draw_overlay(CAMetalDrawable* drawable, float vpW, float vpH) {
     ImGui::NewFrame();
 
     // ---- 显示层（骨骼 / 装备 / 物资），全部只读 ----
-    // 功能边界就到这里：不写游戏内存、不改视角、不发包。
     if (g_esp.load()) {
         esp::render(vpW, vpH);
     }
 
     // ---- 菜单（只有显示开关，没有功能性按钮）----
-    // UI 文本全部走 XOR 常量：anogs 会扫进程内区域的明文串，"skeleton"/"loot"
-    // 这类词是最好用的判定指纹。
+    // UI 文本全部走 XOR 常量：anogs 会扫进程内区域的明文串。
     if (g_on.load()) {
         esp::Settings& S = esp::settings();
         ImGui::Begin(XSTR("s"), nullptr, ImGuiWindowFlags_AlwaysAutoResize);
@@ -103,19 +119,21 @@ static void draw_overlay(CAMetalDrawable* drawable, float vpW, float vpH) {
 }
 
 // ---------------- 方法交换 ----------------
-// 注意：CAMetalDrawable 是**协议**不是类，objc_getClass("CAMetalDrawable") 拿不到。
+// CAMetalDrawable 是协议不是类，objc_getClass("CAMetalDrawable") 拿不到。
 // 正解：第一次 nextDrawable 返回真实对象后，取 object_getClass(d) 得到具体的私有类，
 // 在那个类上交换 present / presentAtTime:。这样协议与私有实现都覆盖到。
-static CAMetalDrawable* (*orig_nextDrawable)(id, SEL);
+static ARDrawableRef (*orig_nextDrawable)(id, SEL);
 static void (*orig_present)(id, SEL);
 static void (*orig_presentAtTime)(id, SEL, CFTimeInterval);
+static void (*orig_sendEvent)(id, SEL, UIEvent*);
 
-static bool  g_presentHooked = false;
-static void  hook_present_on(Class concreteCls);
-static void  do_draw(CAMetalDrawable* d);
+static bool g_presentHooked = false;
 
-static CAMetalDrawable* hk_nextDrawable(id self, SEL _cmd) {
-    CAMetalDrawable* d = orig_nextDrawable(self, _cmd);
+static void hook_present_on(Class concreteCls);
+static void do_draw(ARDrawableRef d);
+
+static ARDrawableRef hk_nextDrawable(id self, SEL _cmd) {
+    ARDrawableRef d = orig_nextDrawable(self, _cmd);
     if (d) {
         g_drawable = d;                                 // 只记录，不画
         if (!g_presentHooked) hook_present_on(object_getClass(d));
@@ -125,14 +143,14 @@ static CAMetalDrawable* hk_nextDrawable(id self, SEL _cmd) {
 
 static void hk_present(id self, SEL _cmd) {
     @autoreleasepool {
-        do_draw((CAMetalDrawable*)self);
+        do_draw((ARDrawableRef)self);
         orig_present(self, _cmd);                       // 我们画完再交给系统 present
     }
 }
 
 static void hk_presentAtTime(id self, SEL _cmd, CFTimeInterval t) {
     @autoreleasepool {
-        do_draw((CAMetalDrawable*)self);
+        do_draw((ARDrawableRef)self);
         orig_presentAtTime(self, _cmd, t);
     }
 }
@@ -153,19 +171,22 @@ static void hook_present_on(Class concreteCls) {
     g_presentHooked = (mp || mt);
 }
 
-static void do_draw(CAMetalDrawable* d) {
+static void do_draw(ARDrawableRef d) {
     if (!d || !g_drawable) return;
-    CGSize sz = d.layer ? d.layer.drawableSize : CGSizeMake(0, 0);
+
+    id<ARLayerLike> lay = (id<ARLayerLike>)[d layer];
+    CGSize sz = lay ? [lay drawableSize] : CGSizeMake(0, 0);
     if (sz.width < 2 || sz.height < 2) return;
+
     if (!g_r.init) {
-        id<MTLDevice> dev = d.layer.device ?: MTLCreateSystemDefaultDevice();
+        id<MTLDevice> dev = lay ? [lay device] : nil;
+        if (!dev) dev = MTLCreateSystemDefaultDevice();
         imgui_bringup(dev);
     }
     draw_overlay(d, (float)sz.width, (float)sz.height);
 }
 
 // 三指双击开关：挂在 UIApplication sendEvent:，不新增手势识别器（少一个可见对象）
-static void (*orig_sendEvent)(id, SEL, UIEvent*);
 static NSTimeInterval g_lastTap = 0;
 static void hk_sendEvent(id self, SEL _cmd, UIEvent* ev) {
     if (ev && ev.type == UIEventTypeTouches) {
@@ -187,7 +208,7 @@ static void hk_sendEvent(id self, SEL _cmd, UIEvent* ev) {
 // ---------------- 安装 ----------------
 void overlay_install() {
     // 只有 CAMetalLayer 是稳定的类；drawable 侧在首次返回时按具体类挂
-    orig_nextDrawable = (CAMetalDrawable*(*)(id, SEL))
+    orig_nextDrawable = (ARDrawableRef(*)(id, SEL))
         hook::swizzle_class_method("CAMetalLayer", @selector(nextDrawable),
                                    (IMP)hk_nextDrawable);
 
@@ -196,7 +217,7 @@ void overlay_install() {
                                    (IMP)hk_sendEvent);
 
     // 若引擎不走 CAMetalLayer（直接自建 MTLCommandBuffer presentDrawable:），
-    // 回退方案见 README「挂点回退」一节。
+    // 回退方案见 Docs/STEALTH.md「挂点回退」。
 }
 
 bool overlay_ready() { return g_r.init; }
