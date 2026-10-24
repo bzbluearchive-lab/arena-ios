@@ -17,7 +17,7 @@ include $(THEOS)/makefiles/common.mk
 LIBRARY_NAME = ARPayload
 
 ARPayload_FILES = SBWindow.mm
-ARPayload_CFLAGS = -fobjc-arc -I../src -I../src/Inject -I../src/Core -I../src/Game
+ARPayload_CFLAGS = -fobjc-arc -I../src -I../src/Inject -I../src/Core -I../src/Game -std=c++17 -Wno-error
 ARPayload_FRAMEWORKS = UIKit Foundation QuartzCore
 ARPayload_INSTALL_PATH = /usr/lib
 

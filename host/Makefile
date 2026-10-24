@@ -11,7 +11,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = ARHost
 
 ARHost_FILES = main.mm
-ARHost_CFLAGS = -fobjc-arc -I../src -I../src/Host -I.
+ARHost_CFLAGS = -fobjc-arc -I../src -I../src/Host -I. -std=c++17 -Wno-error
 ARHost_FRAMEWORKS = UIKit Foundation
 ARHost_CODESIGN_FLAGS = -Sentitlements.plist
 ARHost_INSTALL_PATH = /Applications

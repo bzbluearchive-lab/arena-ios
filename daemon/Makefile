@@ -11,7 +11,7 @@ include $(THEOS)/makefiles/common.mk
 TOOL_NAME = ARDaemon
 
 ARDaemon_FILES = main.mm
-ARDaemon_CFLAGS = -fobjc-arc -I../src -I../src/Inject -I../src/Core -I../src/Game
+ARDaemon_CFLAGS = -fobjc-arc -I../src -I../src/Inject -I../src/Core -I../src/Game -std=c++17 -Wno-error
 ARDaemon_FRAMEWORKS = Foundation
 ARDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 
