@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <dlfcn.h>
 #include <unistd.h>
 
