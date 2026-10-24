@@ -121,16 +121,29 @@ static uintptr_t probe_gengine(void) {
     return 0;
 }
 
-// ==================== 世界就绪后挂渲染点 ====================
+// ==================== 渲染挂点：与"世界就绪"解耦 ====================
+// 之前的 bug：overlay_install() 被放在"拿到世界"之后才调用，于是
+//   - 探针 app 里没有 UE 世界 -> 永远不挂 -> 菜单永远不出现
+//   - 游戏里偏移还没填 -> 同样永远不挂
+// 现在：加载完 0.8s 就无条件挂渲染点；世界那套只用来决定"画什么"，不决定"能不能画"。
 static int  g_attempts = 0;
 static const int kMaxAttempts = 40;
 static bool g_overlayInstalled = false;
+static bool g_worldReady = false;
 
 static void try_bringup(void);
 
+static void install_overlay_once(void) {
+    if (g_overlayInstalled) return;
+    g_overlayInstalled = true;
+    overlay_install();
+    ARLog(@"overlay installed (world-independent)");
+}
+
 static void schedule_retry(void) {
     if (g_attempts++ >= kMaxAttempts) {
-        ARLog(@"bring-up 放弃：%d 次尝试后仍未拿到世界（偏移没填 / 反篡改指针链）", kMaxAttempts);
+        ARLog(@"世界解析放弃：%d 次尝试仍未拿到（偏移没填 / 反篡改指针链）。"
+               "叠加层已经挂上了，只是没有数据可画。", kMaxAttempts);
         return;
     }
     int64_t ms = (g_attempts < 10) ? 200 : 500;
@@ -140,20 +153,20 @@ static void schedule_retry(void) {
 
 static void try_bringup(void) {
     @autoreleasepool {
-        if (g_overlayInstalled) return;
+        if (g_worldReady) return;
         if (kill_switch_on()) { ARLog(@"kill switch 命中，停止"); return; }
 
         world::Context c = world::resolve();
         std::vector<uintptr_t> list;
         if (!(c.world && world::actors(c, list) && !list.empty())) {
-            ARLog(@"未就绪 attempt=%d world=0x%lx level=0x%lx",
-                  g_attempts, (unsigned long)c.world, (unsigned long)c.level);
+            if (g_attempts < 4 || g_attempts % 10 == 0)
+                ARLog(@"世界未就绪 attempt=%d world=0x%lx level=0x%lx",
+                      g_attempts, (unsigned long)c.world, (unsigned long)c.level);
             schedule_retry();
             return;
         }
-        ARLog(@"就绪 world=0x%lx actors=%zu", (unsigned long)c.world, list.size());
-        overlay_install();
-        g_overlayInstalled = true;
+        ARLog(@"世界就绪 world=0x%lx actors=%zu", (unsigned long)c.world, list.size());
+        g_worldReady = true;
     }
 }
 
@@ -184,6 +197,11 @@ static void archeat_init(void) {
             ARLog(@"GEngine 探测候选=0x%lx（需静态分析确认）", (unsigned long)cand);
         }
 
+        // 0.8s 后无条件挂渲染点（等引擎初始化出第一个 CAMetalLayer）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 800 * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^{ install_overlay_once(); });
+
+        // 世界解析独立进行，失败不影响叠加层
         schedule_retry();
     }
 }
