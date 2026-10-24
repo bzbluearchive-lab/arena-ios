@@ -16,6 +16,7 @@ TWEAK_NAME = ARCheat
 # 只显示：骨骼 / 装备 / 物资
 # Aim.mm 不在列表里 —— 这是刻意的：整个 dylib 不链接任何会调用 mem::wr 的目标文件，
 # 二进制里根本不存在写游戏内存的代码路径（见 Docs/ESP-ONLY.md「零写入」）。
+# Tweak.xm 必须带 m 后缀：它用到了 C++ 模板（mem::read），按 ObjC++ 编译才认 -std=c++17。
 ARCheat_FILES = \
 	src/Core/Stealth.mm \
 	src/Game/UObject.mm \
@@ -23,7 +24,7 @@ ARCheat_FILES = \
 	src/Game/Scene.mm \
 	src/Render/ESP.mm \
 	src/Render/Overlay.mm \
-	Tweak.x
+	Tweak.xm
 
 # ImGui 核心 + Metal 后端：只有 vendor/imgui 存在时才编进来（本机没拉也不会挂）
 ARCheat_FILES += $(wildcard \
