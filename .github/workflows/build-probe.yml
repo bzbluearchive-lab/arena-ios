@@ -1,8 +1,13 @@
 name: build-probe
 
-# 只做一件事：把 probe/ 这个 MTKView 空壳 app 打成可安装的 ARProbe.ipa。
-# 用途是验证注入链路（TrollFools 注入 -> dylib 加载 -> Metal 挂点 -> ImGui 叠加），
-# 不涉及游戏、不涉及偏移。
+# 产出两个包：
+#   ARProbe.ipa           裸 app（自己不含作弊代码）
+#   ARProbe-injected.ipa  已经把 ARCheat.dylib 烤进包里（PlugIns/ + LC_LOAD_DYLIB）
+#
+# 注入版存在的意义：设备端不需要任何注入工具。TrollStore 装的是未签名 IPA，
+# 它不关心包里有没有 dylib；装完启动就直接加载了。
+#
+# 用途是验证引擎无关的那条链：dylib 加载 -> Metal 挂点 -> ImGui 叠加。
 
 on:
   push:
@@ -24,51 +29,76 @@ jobs:
           git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
           ls -d "$HOME/theos/sdks"/iPhoneOS*.sdk
 
-      - name: 编译 ARProbe.app
+      - name: 拉 ImGui（构建 dylib 需要）
+        run: |
+          set -e
+          mkdir -p vendor
+          git clone --depth=1 --branch v1.90.9 https://github.com/ocornut/imgui.git vendor/imgui
+          ls vendor/imgui/imgui.h vendor/imgui/backends/imgui_impl_metal.mm
+
+      - name: 构建 ARCheat.dylib
         run: |
           set -e
           export THEOS=$HOME/theos
           export PATH="/opt/homebrew/bin:$PATH"
-          make -C probe
-          find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d
+          make -f Makefile.legacy-tweak
+          mkdir -p dist
+          DYLIB=$(find .theos/obj -name 'ARCheat.dylib' -type f | head -1)
+          test -n "$DYLIB" || { echo "FATAL: ARCheat.dylib not found"; exit 1; }
+          cp "$DYLIB" dist/ARCheat.dylib
+          # 把 install name 改成相对路径，app 才能把 dylib 当成包内插件加载
+          install_name_tool -id @executable_path/PlugIns/ARCheat.dylib dist/ARCheat.dylib
+          echo "--- install name ---"
+          otool -D dist/ARCheat.dylib || true
+          lipo -info dist/ARCheat.dylib || true
 
-      - name: 组装 ipa
+      - name: 构建 ARProbe.app（链接进 dylib）
         run: |
           set -e
-          # 优先用 theos 的 staging 目录（那里才是完整 bundle：Info.plist + 二进制）
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          make -C probe PROBE_DYLIB="$PWD/dist/ARCheat.dylib"
           APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
-          if [ -z "$APP" ]; then
-            APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1)
-          fi
-          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; find probe/.theos -maxdepth 5 -name '*.app'; exit 1; }
+          if [ -z "$APP" ]; then APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1); fi
+          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; exit 1; }
           echo "app=$APP"
+          echo "--- 链接检查（应出现 ARCheat）---"
+          otool -L "$APP/ARProbe" | grep -i archeat || { echo "FATAL: dylib not linked into app"; otool -L "$APP/ARProbe"; exit 1; }
 
-          rm -rf Payload ARProbe.ipa
+      - name: 组装两个 ipa
+        run: |
+          set -e
+          APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1); fi
+          test -n "$APP"
+
+          rm -rf Payload ARProbe.ipa ARProbe-injected.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
-
-          # theos 会把调试符号目录一起放进 bundle，装之前清掉（纯体积/整洁问题）
           find Payload -name '*.dSYM' -type d -exec rm -rf {} + 2>/dev/null || true
-
-          # theos 的 application.mk 不一定把 Info.plist 拷进 bundle，缺了 ipa 就装不上
           if [ ! -f Payload/ARProbe.app/Info.plist ]; then
-            echo "Info.plist missing in bundle -> copying from probe/Info.plist"
             cp probe/Info.plist Payload/ARProbe.app/Info.plist
           fi
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Payload/ARProbe.app/Info.plist
 
-          ls -la Payload/ARProbe.app
-          ldid -S Payload/ARProbe.app/ARProbe || echo "ldid failed (non-fatal for TrollStore)"
-          otool -hv Payload/ARProbe.app/ARProbe | tail -3
+          # 注入版：把 dylib 放到 PlugIns/ 里
+          mkdir -p Payload/ARProbe.app/PlugIns
+          cp dist/ARCheat.dylib Payload/ARProbe.app/PlugIns/ARCheat.dylib
 
-          zip -qry ARProbe.ipa Payload
-          ls -la ARProbe.ipa
-          unzip -l ARProbe.ipa
+          ldid -S Payload/ARProbe.app/PlugIns/ARCheat.dylib || true
+          ldid -S Payload/ARProbe.app/ARProbe || true
+
+          echo "--- LC_LOAD_DYLIB ---"
+          otool -L Payload/ARProbe.app/ARProbe
+          echo "--- bundle ---"
+          ls -la Payload/ARProbe.app Payload/ARProbe.app/PlugIns
+
+          zip -qry ARProbe-injected.ipa Payload
+          ls -la ARProbe-injected.ipa
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: ARProbe-ipa
-          path: ARProbe.ipa
+          path: ARProbe-injected.ipa
           if-no-files-found: error
