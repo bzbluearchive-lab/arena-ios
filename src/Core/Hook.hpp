@@ -15,6 +15,7 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <objc/runtime.h>
 #include <mach/mach.h>
 #include <libkern/OSCacheControl.h>
@@ -99,15 +100,29 @@ struct Registry { InlineHook slots[64]; int n = 0; };
 inline Registry& registry() { static Registry r; return r; }
 
 // 安装 inline hook。成功后 orig 指向 trampoline，调用 orig 等于调原函数。
-// keep 里保存原始 4 条指令，卸载时用它复原。
+//
+// ⚠ 默认关闭（AR_ALLOW_INLINE_HOOK=0），原因见 Docs/STEALTH.md §3：
+//   它必须 mmap 一块匿名可执行内存放 trampoline，而"无 backing file 的可执行区域"
+//   正是 anogs region walk 在找的东西。本工程主干用 ObjC 方法交换 + vtable 槽替换，
+//   两条都不需要分配可执行内存，所以默认用不到它。
+//   真要开：把 trampoline 放进 dylib 静态节（__TEXT,__arthunk），别用 MAP_JIT。
+#ifndef AR_ALLOW_INLINE_HOOK
+#define AR_ALLOW_INLINE_HOOK 0
+#endif
+
 inline bool install_inline(uintptr_t target, void* hookFn, InlineHook& out) {
+#if !AR_ALLOW_INLINE_HOOK
+    (void)target; (void)hookFn; (void)out;
+    return false;                      // 默认不提供可执行内存分配路径
+#else
     if (!target || !hookFn) return false;
     if (!prologue_copyable(target)) return false;   // Trap2：脏序言直接放弃
 
     // 1) trampoline = 4 条原指令 + 回跳
+    //    不开 MAP_JIT：普通 dylib 申请 JIT 权限本身就是一个异常特征
     size_t tsize = 64;
     void* tramp = mmap(nullptr, tsize, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT, -1, 0);
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (tramp == MAP_FAILED) return false;
 
     for (int i = 0; i < 4; i++) memcpy(&out.orig[i], (void*)(target + i * 4), 4);
@@ -136,6 +151,7 @@ inline bool install_inline(uintptr_t target, void* hookFn, InlineHook& out) {
     out.target = target;
     out.trampoline = tramp;
     return true;
+#endif // AR_ALLOW_INLINE_HOOK
 }
 
 // 便捷重载：不关心 trampoline 结构时用这个，orig 直接拿到"调原函数"的入口。
