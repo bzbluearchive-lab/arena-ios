@@ -61,6 +61,11 @@ struct BtnRect { float x, y, w, h; };
 static BtnRect g_btn = { 14.f, 58.f, 44.f, 44.f };
 static float     g_uiScale = 1.f;   // drawable 像素 / 屏幕点（由 layer.bounds 换算）
 
+// 诊断用：证明"每帧确实进了 draw_overlay"，否则一切都是空谈
+static int64_t      g_frames = 0;
+static CFTimeInterval g_lastLog = 0;
+static CFTimeInterval g_bootAt = 0;
+
 // ---------------- ImGui + Metal ----------------
 struct Renderer {
     id<MTLDevice>       device = nil;
@@ -99,6 +104,36 @@ static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
 
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
+
+    // ---- 帧计数 + 启动横幅 ----
+    // 横幅是为了"肉眼确认"：如果连这条 6px 描边都看不到，问题在 Metal pass 顺序或
+    // 我们根本没被调用，跟 ImGui 无关；如果看得到描边但看不到菜单，问题在菜单逻辑。
+    {
+        const CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+        if (g_bootAt == 0.0) {
+            g_bootAt = now;
+            g_lastLog = now;
+            NSLog(@"[ovl] first frame drawable=%@", drawable);
+        }
+        g_frames++;
+        if (now - g_lastLog >= 1.0) {
+            NSLog(@"[ovl] frames=%lld fps=%.1f scale=%.2f size=%.0fx%.0f",
+                  (long long)g_frames, (double)g_frames / (now - g_lastLog),
+                  g_uiScale, vpW, vpH);
+            g_frames = 0;
+            g_lastLog = now;
+        }
+        if (now - g_bootAt < 4.0) {
+            ImDrawList* bd = ImGui::GetBackgroundDrawList();
+            const float t = 8.f * g_uiScale;
+            bd->AddRect(ImVec2(2, 2), ImVec2(vpW - 2, vpH - 2),
+                        IM_COL32(0, 255, 140, 235), 0.f, 0, t);
+            const char* txt = XSTR("o");
+            const ImVec2 sz = ImGui::CalcTextSize(txt);
+            bd->AddText(ImVec2((vpW - sz.x) * 0.5f, vpH * 0.45f),
+                        IM_COL32(0, 255, 140, 255), txt);
+        }
+    }
 
     // ---- 屏幕开关（始终画，不依赖菜单开没开）----
     // 触摸坐标是"点"，绘制坐标是像素。比例从 drawable 所在 layer 的 bounds 换算，
@@ -262,6 +297,9 @@ void overlay_install() {
     orig_sendEvent = (void(*)(id, SEL, UIEvent*))
         hook::swizzle_class_method("UIApplication", @selector(sendEvent:),
                                    (IMP)hk_sendEvent);
+
+    NSLog(@"[ovl] install nextDrawable=%p sendEvent=%p", (void*)orig_nextDrawable,
+          (void*)orig_sendEvent);
 
     // 若引擎不走 CAMetalLayer（直接自建 MTLCommandBuffer presentDrawable:），
     // 回退方案见 Docs/STEALTH.md「挂点回退」。
