@@ -4,24 +4,25 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
 	<key>CFBundleExecutable</key><string>ARHost</string>
-	<key>CFBundleIdentifier</key><string>com.local.arhost</string>
+	<!-- 每次结构性改动换一次 id，避免旧的坏注册占着同一个 id 不放 -->
+	<key>CFBundleIdentifier</key><string>com.local.artest3</string>
 	<key>CFBundleName</key><string>ARHost</string>
-	<key>CFBundleDisplayName</key><string>AR Host</string>
+	<key>CFBundleDisplayName</key><string>AR T3</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleSignature</key><string>????</string>
-	<key>CFBundleShortVersionString</key><string>0.1.0</string>
-	<key>CFBundleVersion</key><string>1</string>
+	<key>CFBundleShortVersionString</key><string>0.3.0</string>
+	<key>CFBundleVersion</key><string>3</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 
-	<!-- iOS 启动/安装时要求的平台字段，缺了容易装不上或启动即退 -->
 	<key>CFBundleSupportedPlatforms</key>
 	<array><string>iPhoneOS</string></array>
 	<key>DTPlatformName</key><string>iphoneos</string>
-	<key>DTSDKName</key><string>iphoneos16.0</string>
-	<key>DTPlatformVersion</key><string>16.0</string>
-	<key>DTSDKBuild</key><string>20A360</string>
 	<key>DTCompiler</key><string>com.apple.compilers.llvm.clang.1_0</string>
 	<key>LSRequiresIPhoneOS</key><true/>
+
+	<!-- 让 app 的 Documents 直接出现在「文件」App 里，用来读启动探针 -->
+	<key>UIFileSharingEnabled</key><true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key><true/>
 
 	<key>MinimumOSVersion</key><string>15.0</string>
 	<key>UIDeviceFamily</key>
