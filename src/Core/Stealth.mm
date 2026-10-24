@@ -6,6 +6,8 @@
 #include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <unistd.h>
 
 namespace stealth {
@@ -44,9 +46,18 @@ static int hk_sysctl(int* name, u_int namelen, void* oldp, size_t* oldlenp,
 // ---------------- TrollStore 痕迹 ----------------
 // 只拦"文件存在性/打开"这一类探测，返回 ENOENT。不做全局 hook。
 static const char* kSTPaths[] = {
+    // TrollStore
     "/var/containers/Bundle/trollstore",
     "/var/containers/Bundle/Application/.trollstore",
     "/var/mobile/Library/Preferences/com.opa334.TrollStore.plist",
+    // roothide Bootstrap（全系统注入环境）—— anogs 明确在找这一套
+    "/var/containers/Bundle/tweaksupport",
+    // Dopamine / rootless 越狱痕迹
+    "/var/jb",
+    // 包管理器
+    "/var/lib/dpkg",
+    "/Applications/Sileo.app",
+    "/Applications/Zebra.app",
 };
 static const int kSTCount = sizeof(kSTPaths) / sizeof(kSTPaths[0]);
 
