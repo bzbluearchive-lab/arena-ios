@@ -17,4 +17,11 @@ ARProbe_CFLAGS = -fobjc-arc -std=c++17
 ARProbe_FRAMEWORKS = UIKit Foundation Metal MetalKit QuartzCore
 ARProbe_INSTALL_PATH = /Applications
 
+# 可选：把 ARCheat.dylib 直接链进这个 app —— 这样设备上不需要任何注入工具，
+# 装 IPA 就等于完成了注入（TrollStore 装的是未签名 IPA，不检查包里有什么）。
+# 用法：make -C probe PROBE_DYLIB=/abs/path/ARCheat.dylib
+ifneq ($(PROBE_DYLIB),)
+ARProbe_LDFLAGS = $(PROBE_DYLIB) -Wl,-rpath,@executable_path/PlugIns
+endif
+
 include $(THEOS_MAKE_PATH)/application.mk
