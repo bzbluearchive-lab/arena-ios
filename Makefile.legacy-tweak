@@ -13,17 +13,37 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ARCheat
 
+# 只显示：骨骼 / 装备 / 物资
+# Aim.mm 不在列表里 —— 这是刻意的：整个 dylib 不链接任何会调用 mem::wr 的目标文件，
+# 二进制里根本不存在写游戏内存的代码路径（见 Docs/ESP-ONLY.md「零写入」）。
 ARCheat_FILES = \
 	src/Core/Stealth.mm \
+	src/Game/UObject.mm \
 	src/Game/World.mm \
-	src/Game/Aim.mm \
+	src/Game/Scene.mm \
+	src/Render/ESP.mm \
 	src/Render/Overlay.mm \
 	Tweak.x
 
-ARCheat_CFLAGS = -fobjc-arc -std=c++17 -I. -Isrc -Ivendor -Ivendor/imgui
+# ImGui 核心 + Metal 后端：只有 vendor/imgui 存在时才编进来（本机没拉也不会挂）
+ARCheat_FILES += $(wildcard \
+	vendor/imgui/imgui.cpp \
+	vendor/imgui/imgui_draw.cpp \
+	vendor/imgui/imgui_tables.cpp \
+	vendor/imgui/imgui_widgets.cpp \
+	vendor/imgui/backends/imgui_impl_metal.mm)
+
+ARCheat_CFLAGS = -fobjc-arc -std=c++17 -I. -Isrc -Ivendor -Ivendor/imgui \
+	-fvisibility=hidden -fno-unwind-tables -fno-asynchronous-unwind-tables
 ARCheat_CCFLAGS = -fno-exceptions -fno-rtti
 ARCheat_FRAMEWORKS = Foundation UIKit Metal MetalKit QuartzCore CoreGraphics
 ARCheat_PRIVATE_FRAMEWORKS = IOSurface
-ARCheat_LDFLAGS = -Wl,-segalign,0x4000
+# -x 去掉本地符号：dylib 里不该出现 hk_nextDrawable / aim_tick 这类可读名字
+ARCheat_LDFLAGS = -Wl,-segalign,0x4000 -Wl,-x
+
+# 隐蔽性开关（见 Docs/STEALTH.md）
+#   AR_ALLOW_INLINE_HOOK=0  不提供匿名可执行内存分配路径（默认）
+#   AR_XKEY                字符串 XOR 密钥
+ARCheat_CFLAGS += -DAR_ALLOW_INLINE_HOOK=0 -DAR_XKEY=0x5B
 
 include $(THEOS_MAKE_PATH)/tweak.mk
