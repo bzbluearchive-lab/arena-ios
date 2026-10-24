@@ -1,8 +1,8 @@
 #include "Stealth.hpp"
 #include "../Core/Hook.hpp"
 #include <mach-o/dyld.h>
+#include <sys/types.h>
 #include <sys/sysctl.h>
-#include <sys/ptrace.h>
 #include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>
@@ -17,9 +17,11 @@ static uint32_t g_self_index = UINT32_MAX;
 static const char* kLogPath = nullptr;   // 由 Tweak.x 注入容器内 tmp 路径
 
 // ---------------- PT_DENY_ATTACH ----------------
-// 直接 ptrace 会在部分构建上被 anogs 的 anti-debug 反向探测到"有人调用了
-// PT_DENY_ATTACH 但自身不是 app 主二进制"，因此只在 opt 打开时调用，并且
-// 通过 syscall 而非 libc 包装，减少符号层面可见性。
+// iPhoneOS SDK 里没有 <sys/ptrace.h>（macOS 有，iOS 没有），所以自定义常量与声明。
+// 直接 ptrace 会在部分构建上被 anogs 的反调试反向探测到，因此只在 opt 打开时调用。
+#ifndef PT_DENY_ATTACH
+#define PT_DENY_ATTACH 31
+#endif
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 static void do_deny_attach() {
