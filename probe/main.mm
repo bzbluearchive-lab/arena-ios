@@ -7,6 +7,10 @@
 // 看不到菜单就说明挂点没生效，与游戏的偏移无关，可以直接定位问题。
 
 #import <UIKit/UIKit.h>
+#import <Metal/Metal.h>
+#import <Metal/MTLCommandQueue.h>
+#import <Metal/MTLCommandBuffer.h>
+#import <Metal/MTLRenderPass.h>
 #import <MetalKit/MetalKit.h>
 
 @interface ProbeVC : UIViewController <MTKViewDelegate>
