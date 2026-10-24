@@ -41,6 +41,7 @@
 
 @protocol ARLayerLike <NSObject>
 - (CGSize)drawableSize;
+- (CGRect)bounds;            // 点（point）单位，用来换算 点 -> 像素
 - (id<MTLDevice>)device;
 @end
 
@@ -58,8 +59,7 @@ static ARDrawableRef g_drawable = nil;
 // 坐标用"点"，绘制时再乘 scale 换成像素。
 struct BtnRect { float x, y, w, h; };
 static BtnRect g_btn = { 14.f, 58.f, 44.f, 44.f };
-static float     g_uiScale = 1.f;   // drawable 像素 / 屏幕点
-static float     g_ptsW = 1.f;      // 窗口宽（点）
+static float     g_uiScale = 1.f;   // drawable 像素 / 屏幕点（由 layer.bounds 换算）
 
 // ---------------- ImGui + Metal ----------------
 struct Renderer {
@@ -101,16 +101,13 @@ static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
     ImGui::NewFrame();
 
     // ---- 屏幕开关（始终画，不依赖菜单开没开）----
-    // 触摸坐标是"点"，绘制坐标是像素，这里记下比例供 sendEvent 里做命中判定。
+    // 触摸坐标是"点"，绘制坐标是像素。比例从 drawable 所在 layer 的 bounds 换算，
+    // 不用 UIApplication.keyWindow / windows（iOS 13/15 起 deprecated，-Werror 会直接报错）。
     {
-        UIWindow* win = UIApplication.sharedApplication.keyWindow;
-        if (!win) {
-            NSArray<UIWindow*>* ws = UIApplication.sharedApplication.windows;
-            if (ws.count) win = ws.firstObject;
-        }
-        if (win && win.bounds.size.width > 1.f) {
-            g_ptsW = (float)win.bounds.size.width;
-            g_uiScale = vpW / g_ptsW;
+        id<ARLayerLike> lay = (id<ARLayerLike>)[drawable layer];
+        if (lay) {
+            const CGRect lb = [lay bounds];
+            if (lb.size.width > 1.f) g_uiScale = vpW / (float)lb.size.width;
         }
         const float sc = g_uiScale;
         ImDrawList* bg = ImGui::GetBackgroundDrawList();
@@ -244,7 +241,8 @@ static void hk_sendEvent(id self, SEL _cmd, UIEvent* ev) {
         if (all.count == 1) {
             for (UITouch* t in all) {
                 if (t.phase == UITouchPhaseEnded) {
-                    CGPoint loc = [t locationInWindow];
+                    // locationInView:nil 给的是窗口坐标（点），不是 deprecated API
+                    CGPoint loc = [t locationInView:nil];
                     if (point_on_button(loc)) g_on = !g_on.load();
                     break;
                 }
