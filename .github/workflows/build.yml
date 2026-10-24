@@ -1,8 +1,7 @@
 name: build
 
 # 用 GitHub 的 macOS runner 编译，本地零安装。
-# 用法：把整个工程推进一个（私有）仓库 → Actions 页面 → 跑完在 Artifacts 里下载
-#       ARHost-release → 里面就是 build/ARHost.zip
+# 产物：ARHost.ipa（TrollStore 装）+ ARHost-app.zip（TrollFools 装）
 
 on:
   push:
@@ -18,11 +17,20 @@ jobs:
         run: |
           set -e
           export THEOS=$HOME/theos
-          brew install ldid
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          # theos 官方 SDK 仓库，本地不需要 Xcode 的 .xip
+          export PATH="/opt/homebrew/bin:$PATH"
+          echo "=== 环境 ==="
+          clang --version | head -1
+          git --version
+          brew install ldid || brew upgrade ldid || echo "ldid 已存在"
+          echo "=== 克隆 theos ==="
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
+          echo "=== 拉 iOS SDK ==="
+          # theos 仓库自带一个 sdks 目录，直接 clone 到同一路径会报 exit 128，先删掉
+          rm -rf "$THEOS/sdks"
           git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
-          ls "$THEOS/sdks"
+          echo "=== 结果 ==="
+          ls -d "$THEOS/sdks"/iPhoneOS*.sdk
+          which ldid clang make
 
       - name: 静态自检
         run: python3 tools/preflight.py
@@ -39,15 +47,15 @@ jobs:
           set -e
           echo "--- app 包内容 ---"
           ls -la build/ARHost.app
-          echo "--- 架构（应为 ARM64） ---"
+          echo "--- 架构（应为 ARM64 / 0x0100000c） ---"
           for f in ARHost ARDaemon ARPayload.dylib; do
             printf '%-18s ' "$f"
             otool -hv "build/ARHost.app/$f" | awk 'NR==4{print $3, $4, $5}'
           done
-          echo "--- 签名状态 ---"
+          echo "--- entitlements ---"
           for f in ARHost ARDaemon; do
             echo "[$f]"
-            codesign -d --entitlements - "build/ARHost.app/$f" 2>&1 | head -40 || ldid -e "build/ARHost.app/$f" | head -40
+            ldid -e "build/ARHost.app/$f" || true
           done
 
       - name: 上传
