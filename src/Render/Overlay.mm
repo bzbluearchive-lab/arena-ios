@@ -48,9 +48,18 @@ typedef id<ARDrawable> ARDrawableRef;
 
 // ---------------- 全局状态 ----------------
 // 只有"显示开关"，没有任何功能性状态：这个 dylib 不写游戏内存、不改视角。
-static std::atomic<bool> g_on{false};      // 总开关（三指双击切）
+// 默认开：装完启动就能看见菜单，确认渲染通不通；关掉靠左上角那个方块按钮。
+static std::atomic<bool> g_on{true};
 static std::atomic<bool> g_esp{true};
 static ARDrawableRef g_drawable = nil;
+
+// ---- 屏幕上的开关 ----
+// 画在左上角，始终可见（菜单关着也画），点它就开/关菜单。
+// 坐标用"点"，绘制时再乘 scale 换成像素。
+struct BtnRect { float x, y, w, h; };
+static BtnRect g_btn = { 14.f, 58.f, 44.f, 44.f };
+static float     g_uiScale = 1.f;   // drawable 像素 / 屏幕点
+static float     g_ptsW = 1.f;      // 窗口宽（点）
 
 // ---------------- ImGui + Metal ----------------
 struct Renderer {
@@ -91,6 +100,33 @@ static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
 
+    // ---- 屏幕开关（始终画，不依赖菜单开没开）----
+    // 触摸坐标是"点"，绘制坐标是像素，这里记下比例供 sendEvent 里做命中判定。
+    {
+        UIWindow* win = UIApplication.sharedApplication.keyWindow;
+        if (!win) {
+            NSArray<UIWindow*>* ws = UIApplication.sharedApplication.windows;
+            if (ws.count) win = ws.firstObject;
+        }
+        if (win && win.bounds.size.width > 1.f) {
+            g_ptsW = (float)win.bounds.size.width;
+            g_uiScale = vpW / g_ptsW;
+        }
+        const float sc = g_uiScale;
+        ImDrawList* bg = ImGui::GetBackgroundDrawList();
+        const ImVec2 a(g_btn.x * sc, g_btn.y * sc);
+        const ImVec2 b((g_btn.x + g_btn.w) * sc, (g_btn.y + g_btn.h) * sc);
+        bg->AddRectFilled(a, b, IM_COL32(16, 18, 22, 190), 9.f);
+        bg->AddRect(a, b, IM_COL32(90, 220, 150, 230), 9.f, 0, 2.f);
+        // 三段横线，画成"菜单"的样子（ASCII，不依赖字体里的特殊字形）
+        const float px = a.x + 11.f * sc, py = a.y + 10.f * sc, lw = 22.f * sc;
+        for (int i = 0; i < 3; i++)
+            bg->AddLine(ImVec2(px, py + i * 10.f * sc), ImVec2(px + lw, py + i * 10.f * sc),
+                        IM_COL32(90, 220, 150, 255), 2.f * sc);
+        if (g_on.load())
+            bg->AddRect(a, b, IM_COL32(255, 210, 60, 255), 9.f, 0, 2.f);  // 打开状态描边
+    }
+
     // ---- 显示层（骨骼 / 装备 / 物资），全部只读 ----
     if (g_esp.load()) {
         esp::render(vpW, vpH);
@@ -100,6 +136,9 @@ static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
     // UI 文本全部走 XOR 常量：anogs 会扫进程内区域的明文串。
     if (g_on.load()) {
         esp::Settings& S = esp::settings();
+        ImGui::SetNextWindowPos(ImVec2((g_btn.x + g_btn.w + 10.f) * g_uiScale,
+                                       g_btn.y * g_uiScale),
+                                ImGuiCond_Always);
         ImGui::Begin(XSTR("s"), nullptr, ImGuiWindowFlags_AlwaysAutoResize);
         bool on = g_esp.load();
         if (ImGui::Checkbox(XSTR("a"), &on)) g_esp = on;          // 总开关
@@ -186,17 +225,27 @@ static void do_draw(ARDrawableRef d) {
     draw_overlay(d, (float)sz.width, (float)sz.height);
 }
 
-// 三指双击开关：挂在 UIApplication sendEvent:，不新增手势识别器（少一个可见对象）
-static NSTimeInterval g_lastTap = 0;
+// 屏幕开关的命中判定：点坐标 × scale = 像素坐标，再和按钮矩形比。
+// 容差 14 点：手指按不准也能点到。
+static bool point_on_button(CGPoint p) {
+    if (g_uiScale <= 0.f) return false;
+    const float x = (float)p.x * g_uiScale;
+    const float y = (float)p.y * g_uiScale;
+    const float m = 14.f * g_uiScale;
+    return x >= g_btn.x * g_uiScale - m && x <= (g_btn.x + g_btn.w) * g_uiScale + m &&
+           y >= g_btn.y * g_uiScale - m && y <= (g_btn.y + g_btn.h) * g_uiScale + m;
+}
+
+// 输入：只认"点左上角那个方块"这一种方式。
+// 原来那套三指双击的问题：iPad 上三指很难同步按下，且在对局里极易误触，删掉。
 static void hk_sendEvent(id self, SEL _cmd, UIEvent* ev) {
     if (ev && ev.type == UIEventTypeTouches) {
         NSSet* all = [ev allTouches];
-        if (all.count >= 3) {
+        if (all.count == 1) {
             for (UITouch* t in all) {
                 if (t.phase == UITouchPhaseEnded) {
-                    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-                    if (now - g_lastTap < 0.4) g_on = !g_on.load();
-                    g_lastTap = now;
+                    CGPoint loc = [t locationInWindow];
+                    if (point_on_button(loc)) g_on = !g_on.load();
                     break;
                 }
             }
