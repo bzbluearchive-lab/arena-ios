@@ -73,10 +73,17 @@ for mk in ["host/Makefile", "daemon/Makefile", "payload/Makefile"]:
         chk(os.path.exists(os.path.join(base, f)), f"{mk}: 源文件 {f} 存在")
 
 # ---------- 4. entitlements ----------
+# 两个二进制要求不同：
+#   host 是带界面的 UIKit app —— 必须有容器，所以不能带 no-container，
+#   也不需要 task port / 调试器权限（那些只给 daemon）。
 REQUIRED_ENT = [
     "platform-application",
     "com.apple.private.security.no-sandbox",
+]
+DAEMON_ENT = [
     "com.apple.private.cs.debugger",
+    "task_for_pid-allow",
+    "com.apple.system-task-ports",
 ]
 for who in ["host", "daemon"]:
     fp = os.path.join(ROOT, who, "entitlements.plist")
@@ -90,8 +97,12 @@ for who in ["host", "daemon"]:
         continue
     for k in REQUIRED_ENT:
         chk(k in d, f"{who}/entitlements 含 {k}")
-    for k in ("task_for_pid-allow", "com.apple.system-task-ports"):
-        chk(k in d, f"{who}/entitlements 含 {k}（注入 SpringBoard 用）", hard=False)
+    if who == "daemon":
+        for k in DAEMON_ENT:
+            chk(k in d, f"daemon/entitlements 含 {k}（注入 SpringBoard 用）")
+    else:
+        chk("com.apple.private.security.no-container" not in d,
+            "host/entitlements 不含 no-container（UIKit 应用拿不到容器会闪退）")
 
 # ---------- 5. Info.plist ----------
 fp = os.path.join(ROOT, "host", "Info.plist")
