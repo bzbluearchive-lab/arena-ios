@@ -33,7 +33,10 @@ static bool is_target_process(void) {
         // bundleIdentifier，一律不是目标
         return false;
     }
-    return [bid isEqualToString:kTargetBundle];
+    if ([bid isEqualToString:kTargetBundle]) return true;
+    // 探针 app：用来在没有任何注入工具的设备上验证挂点链路（见 probe/）
+    if ([bid isEqualToString:@"com.local.arprobe"]) return true;
+    return false;
 }
 
 // ==================== 全局 kill switch ====================
