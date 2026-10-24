@@ -1,0 +1,128 @@
+name: build-esp
+
+# 只显示形态（骨骼 / 装备 / 物资）的 dylib 构建。
+# 产物：ARCheat.dylib（arm64 + arm64e fat，ldid 已签）+ 注入说明 zip
+#
+# 全程在 GitHub 的 macOS runner 上编译，本地不需要 clang / theos / macOS。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 theos 与 iOS SDK
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          clang --version | head -1
+          git --version
+          brew install ldid || brew upgrade ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
+          rm -rf "$THEOS/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
+          ls -d "$THEOS/sdks"/iPhoneOS*.sdk
+          which ldid clang make python3
+
+      - name: 拉 ImGui（固定 tag，避免上游改动把构建搞挂）
+        run: |
+          set -e
+          mkdir -p vendor
+          git clone --depth=1 --branch v1.90.9 https://github.com/ocornut/imgui.git vendor/imgui
+          ls vendor/imgui/imgui.h vendor/imgui/backends/imgui_impl_metal.mm
+
+      - name: 静态自检
+        run: python3 tools/preflight_esp.py
+
+      - name: 构建 dylib
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          # ImGui 由 Makefile 里的 wildcard 自动纳入（vendor/imgui 存在即编）
+          make -f Makefile.legacy-tweak
+
+      - name: 定位产物并签名
+        id: pack
+        run: |
+          set -e
+          DYLIB=$(find .theos/obj -name 'ARCheat.dylib' -type f | head -1)
+          test -n "$DYLIB" || { echo "FATAL: 没找到 ARCheat.dylib"; find .theos/obj -name '*.dylib'; exit 1; }
+          echo "built: $DYLIB"
+          lipo -info "$DYLIB" || true
+          otool -hv "$DYLIB" | head -20
+
+          # ad-hoc 签名（TrollFools 注入时它会自己再签一次，这里保证文件本身可用）
+          ldid -S "$DYLIB" || echo "ldid failed (non-fatal)"
+
+          mkdir -p dist
+          cp "$DYLIB" dist/ARCheat.dylib
+          cp layout/Library/MobileSubstrate/DynamicLibraries/ARCheat.plist dist/ 2>/dev/null || true
+          echo "$DYLIB" > dist/.built-from
+          echo "dylib=$DYLIB" >> "$GITHUB_OUTPUT"
+
+      - name: 隐蔽性校验（明文指纹 / 写内存调用）
+        run: |
+          set -e
+          D=dist/ARCheat.dylib
+          echo "--- 明文 cheat 指纹（应为 0 命中）---"
+          if strings -a "$D" | grep -i -E 'archeat|aimbot|wallhack|esp_|aim_' ; then
+            echo "WARN: 发现明文指纹，检查是否漏了 XSTR/XNS"
+          else
+            echo "OK: 无明文指纹"
+          fi
+          echo "--- 写内存相关符号（应为 0）---"
+          if nm -u "$D" 2>/dev/null | grep -i -E 'vm_write|mach_vm_write'; then
+            echo "WARN: 引用了写内存 API"
+          else
+            echo "OK: 未引用写内存 API"
+          fi
+          echo "--- 已导出符号数（应极少）---"
+          nm -gU "$D" 2>/dev/null | wc -l || true
+
+      - name: 写注入说明
+        run: |
+          cat > dist/README-INSTALL.txt <<'EOF'
+          ARCheat.dylib —— 只显示形态（骨骼 / 装备 / 物资）
+
+          安装（二选一）
+
+          A. TrollFools（推荐，不动游戏包以外的任何东西）
+             1. 设备上打开 TrollFools
+             2. 选择 Arena Breakout (com.proximabeta.mf.uamo)
+             3. 选择本目录的 ARCheat.dylib -> Inject
+             4. 启动游戏；三指双击屏幕切换菜单
+
+          B. 系统级注入（roothide Bootstrap）
+             把 ARCheat.dylib 与 ARCheat.plist 一起放进
+             /var/containers/Bundle/tweaksupport/Library/MobileSubstrate/DynamicLibraries/
+             然后 respring
+
+          回滚
+             A: TrollFools 里移除注入，或删掉 app 重装
+             B: 删掉上面两个文件后 respring
+
+          止血开关
+             建一个空文件：/var/mobile/Library/Preferences/.sbx.state
+             之后注入即静默（不装 hook、不画东西）
+
+          注意
+             - 偏移是占位符，必须先按 Docs/ESP-ONLY.md 的验收顺序填实测值
+             - 这个 dylib 不写游戏内存、不发包，只读
+          EOF
+          ( cd dist && zip -r ../ARCheat-dylib.zip . )
+          ls -la ARCheat-dylib.zip
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARCheat-dylib
+          path: |
+            ARCheat-dylib.zip
+            dist/ARCheat.dylib
+          if-no-files-found: error
