@@ -8,7 +8,46 @@
 // 不含任何作弊逻辑、不读游戏内存、不建窗口。
 
 #import <UIKit/UIKit.h>
+#include <unistd.h>
 #include "DaemonSpawn.h"
+
+// 启动探针：进程真的跑起来了才会留下文件。
+// 用来区分两种完全不同的失败：
+//   A. 文件完全没出现  -> 进程根本没被系统拉起（签名/权限/包结构问题）
+//   B. 文件出现了      -> 进程跑起来了，之后才崩（代码问题，能拿到崩溃日志）
+static void ARProbe(const char* tag) {
+    @autoreleasepool {
+        NSString* docDir = nil;
+        NSArray* d = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if (d.count) docDir = [d[0] stringByAppendingPathComponent:@"arhost_probe.txt"];
+
+        NSMutableArray* paths = [NSMutableArray array];
+        [paths addObject:@"/var/mobile/Library/Caches/arhost_probe.txt"];  // 无沙盒时可写
+        if ([NSTemporaryDirectory() length]) {
+            [paths addObject:[NSTemporaryDirectory() stringByAppendingPathComponent:@"arhost_probe.txt"]];
+        }
+        if (docDir) [paths addObject:docDir];
+
+        NSString* line = [NSString stringWithFormat:@"%@ %s pid=%d\n",
+                          [NSDate date], tag, getpid()];
+        NSData* data = [line dataUsingEncoding:NSUTF8StringEncoding];
+
+        for (NSString* p in paths) {
+            @try {
+                if (![[NSFileManager defaultManager] fileExistsAtPath:p]) {
+                    [[NSFileManager defaultManager] createFileAtPath:p contents:nil attributes:nil];
+                }
+                NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:p];
+                if (!fh) continue;
+                [fh seekToEndOfFile];
+                [fh writeData:data];
+                [fh closeFile];
+            } @catch (...) {
+                // 写不了就算了，探针不能影响主流程
+            }
+        }
+    }
+}
 
 static NSString* containerPath(void) {
     NSArray* d = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -134,6 +173,7 @@ static NSString* payloadPath(void) {
 
 @implementation AppDelegate
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)o {
+    ARProbe("ui_ready");            // 走到这里说明 UI 已经起来了
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[RootVC alloc] init];
     [self.window makeKeyAndVisible];
@@ -143,6 +183,7 @@ static NSString* payloadPath(void) {
 
 int main(int argc, char** argv) {
     @autoreleasepool {
+        ARProbe("main_enter");          // 走到这里说明进程已被拉起
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }

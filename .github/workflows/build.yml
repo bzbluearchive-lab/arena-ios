@@ -1,7 +1,7 @@
 name: build
 
 # 用 GitHub 的 macOS runner 编译，本地零安装。
-# 产物：ARHost.ipa（TrollStore 装）+ ARHost-app.zip（TrollFools 装）
+# 产物：ARHost-A-ents.ipa / ARHost-B-vanilla.ipa（TrollStore 装）+ ARHost-app.zip（TrollFools 装）
 
 on:
   push:
@@ -25,7 +25,6 @@ jobs:
           echo "=== clone theos ==="
           git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
           echo "=== clone iOS SDKs ==="
-          # theos ships a sdks dir already; cloning into it fails with exit 128
           rm -rf "$THEOS/sdks"
           git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
           echo "=== result ==="
@@ -47,20 +46,16 @@ jobs:
           set -e
           echo "--- bundle contents ---"
           ls -la build/ARHost.app
-          # TrollStore 会因为缺 Info.plist 报 error 302，这里提前拦死
           test -f build/ARHost.app/Info.plist || { echo "FATAL: Info.plist missing in bundle"; exit 1; }
           plutil -lint build/ARHost.app/Info.plist
-          echo "--- ipa contents ---"
-          unzip -l build/ARHost.ipa
-          echo "--- arch (expect ARM64 / 0x0100000c) ---"
+          echo "--- A ipa ---"
+          unzip -l build/ARHost-A-ents.ipa
+          echo "--- B ipa ---"
+          unzip -l build/ARHost-B-vanilla.ipa
+          echo "--- arch ---"
           for f in ARHost ARDaemon ARPayload.dylib; do
             printf '%-18s ' "$f"
             otool -hv "build/ARHost.app/$f" | awk 'NR==4{print $3, $4, $5}'
-          done
-          echo "--- entitlements ---"
-          for f in ARHost ARDaemon; do
-            echo "[$f]"
-            ldid -e "build/ARHost.app/$f" || true
           done
 
       - name: 上传
@@ -68,6 +63,7 @@ jobs:
         with:
           name: ARHost-release
           path: |
-            build/ARHost.ipa
+            build/ARHost-A-ents.ipa
+            build/ARHost-B-vanilla.ipa
             build/ARHost-app.zip
           if-no-files-found: error
