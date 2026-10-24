@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ARCheat 注入过滤器（Substrate / ellekit / roothide Bootstrap 通用格式）
+
+  安装位置（按环境二选一）：
+    roothide Bootstrap : /var/containers/Bundle/tweaksupport/Library/MobileSubstrate/DynamicLibraries/
+    Dopamine (rootless): /var/jb/Library/MobileSubstrate/DynamicLibraries/
+    deb Layout 路径    : Library/MobileSubstrate/DynamicLibraries/ARCheat.plist
+
+  ⚠ 不要删掉 Filter 键。删掉 = 注入所有进程，包括 SpringBoard / backboardd / launchd，
+    后果是：自己的 dylib 在系统进程里跑一遍 constructor、日志写满、镜像表在每个进程
+    都被改动一次 —— 对 ACE 的异常面是灾难级放大，且 SpringBoard 一旦被影响就是
+    "看起来像白苹果"的那种卡死（可恢复，但排查极痛苦）。
+
+  要加第二个目标（比如国服 com.tencent.mf.uamo）就往 Bundles 里追加一条。
+-->
+<plist version="1.0">
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.proximabeta.mf.uamo</string>
+		</array>
+	</dict>
+	<key>ARCheatTargets</key>
+	<dict>
+		<key>note</key>
+		<string>Filter.Bundles 是唯一的注入准入条件；下面的键只是给维护者看的说明</string>
+		<key>engine</key>
+		<string>UE4</string>
+		<key>anticheat</key>
+		<string>Tencent ACE (anogs / AnoSDK)</string>
+	</dict>
+</dict>
+</plist>
