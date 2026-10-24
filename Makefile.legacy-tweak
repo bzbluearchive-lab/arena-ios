@@ -33,7 +33,7 @@ ARCheat_FILES += $(wildcard \
 	vendor/imgui/imgui_widgets.cpp \
 	vendor/imgui/backends/imgui_impl_metal.mm)
 
-ARCheat_CFLAGS = -fobjc-arc -std=c++17 -I. -Isrc -Ivendor -Ivendor/imgui \
+ARCheat_CFLAGS = -fobjc-arc -std=c++17 -I. -Isrc -Ivendor -Ivendor/imgui -Ivendor/imgui/backends \
 	-fvisibility=hidden -fno-unwind-tables -fno-asynchronous-unwind-tables
 ARCheat_CCFLAGS = -fno-exceptions -fno-rtti
 ARCheat_FRAMEWORKS = Foundation UIKit Metal MetalKit QuartzCore CoreGraphics
