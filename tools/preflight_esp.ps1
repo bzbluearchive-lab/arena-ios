@@ -56,6 +56,9 @@ if ($files.Count -eq 0) {
 $incMissing = @()
 $vendorDeps = @()
 $vendorDir = Join-Path $Root 'vendor/imgui'
+# same -I directories the Makefile uses
+$incDirs = @('', 'src', 'vendor', 'vendor/imgui', 'vendor/imgui/backends') |
+    ForEach-Object { if ($_ -eq '') { $Root } else { Join-Path $Root $_ } }
 foreach ($f in $files) {
     $p = Join-Path $Root $f
     if (-not (Test-Path $p)) { continue }
@@ -63,10 +66,11 @@ foreach ($f in $files) {
     $text = Get-Content -Raw -LiteralPath $p
     foreach ($hit in [regex]::Matches($text, '(?m)^\s*#\s*(?:include|import)\s+"([^"]+)"')) {
         $inc = $hit.Groups[1].Value
-        $c1 = [System.IO.Path]::GetFullPath((Join-Path $dir $inc))
-        $c2 = [System.IO.Path]::GetFullPath((Join-Path $Root $inc))
-        if (Test-Path $c1) { continue }
-        if (Test-Path $c2) { continue }
+        $found = $false
+        foreach ($d in (@($dir) + $incDirs)) {
+            if (Test-Path ([System.IO.Path]::GetFullPath((Join-Path $d $inc)))) { $found = $true; break }
+        }
+        if ($found) { continue }
         # third-party headers come from vendor/ and are fetched by CI; not a hard failure
         if ($inc -match '^imgui' -and -not (Test-Path $vendorDir)) {
             if ($vendorDeps -notcontains $inc) { $vendorDeps += $inc }
