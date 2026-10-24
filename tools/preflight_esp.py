@@ -70,6 +70,9 @@ def check_files(files):
 # ---------------------------------------------------------------- 2. include 解析
 INC_RE = re.compile(r'^\s*#\s*(?:include|import)\s+"([^"]+)"', re.M)
 
+# 与 Makefile 里的 -I 保持一致（vendor 头文件靠这些目录解析）
+INC_DIRS = ["", "src", "vendor", "vendor/imgui", "vendor/imgui/backends"]
+
 
 def check_includes(files):
     missing = []
@@ -81,11 +84,8 @@ def check_includes(files):
             continue
         base = os.path.dirname(p)
         for inc in INC_RE.findall(read(p)):
-            cand = [
-                os.path.normpath(os.path.join(base, inc)),
-                os.path.normpath(os.path.join(ROOT, inc)),
-            ]
-            if any(os.path.exists(c) for c in cand):
+            dirs = [base] + [os.path.join(ROOT, d) if d else ROOT for d in INC_DIRS]
+            if any(os.path.exists(os.path.normpath(os.path.join(d, inc))) for d in dirs):
                 continue
             # 三方头文件来自 vendor/，由 CI 拉取；本地没拉不算失败
             if inc.startswith("imgui") and not os.path.isdir(vendor_dir):
