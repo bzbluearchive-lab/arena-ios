@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# 组装可分发包：ARHost.app（含 ARDaemon 与 ARPayload.dylib）+ ldid 签名 + ipa + zip
+# Assemble the distributable package: ARHost.app (+ ARDaemon + ARPayload.dylib),
+# ldid-sign everything, emit .ipa and .zip.
+#
+# Discovery is find/glob-based on purpose: theos output paths and library file
+# names differ between versions and targets (arm64 vs arm64e, "lib" prefix or
+# not), so hard-coded paths are a common source of CI failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SLICE=arm64
 OUT=build/ARHost.app
 
-app=$(ls -d host/.theos/obj/${SLICE}/ARHost.app 2>/dev/null | head -1 || true)
-dmn=$(ls -1 daemon/.theos/obj/${SLICE}/ARDaemon  2>/dev/null | head -1 || true)
-pay=$(ls -1 payload/.theos/obj/${SLICE}/ARPayload.dylib 2>/dev/null | head -1 || true)
+echo "=== locate build outputs ==="
+app=$(find host/.theos/obj    -maxdepth 3 -name 'ARHost.app'         -type d 2>/dev/null | head -1 || true)
+dmn=$(find daemon/.theos/obj  -maxdepth 3 -name 'ARDaemon'           -type f 2>/dev/null | head -1 || true)
+pay=$(find payload/.theos/obj -maxdepth 3 -name '*ARPayload*.dylib'  -type f 2>/dev/null | head -1 || true)
 
-[ -n "$app" ] || { echo "缺少 ARHost.app，先 make host";        exit 1; }
-[ -n "$dmn" ] || { echo "缺少 ARDaemon，先 make daemon";        exit 1; }
-[ -n "$pay" ] || { echo "缺少 ARPayload.dylib，先 make payload"; exit 1; }
+echo "app     = ${app:-<missing>}"
+echo "daemon  = ${dmn:-<missing>}"
+echo "payload = ${pay:-<missing>}"
 
-command -v ldid >/dev/null || { echo "缺少 ldid（brew install ldid）"; exit 1; }
+[ -n "$app" ] || { echo "ERROR: ARHost.app not found"; ls -R host/.theos/obj 2>/dev/null | head -40; exit 1; }
+[ -n "$dmn" ] || { echo "ERROR: ARDaemon not found";   ls -R daemon/.theos/obj 2>/dev/null | head -40; exit 1; }
+[ -n "$pay" ] || { echo "ERROR: payload dylib not found"; ls -R payload/.theos/obj 2>/dev/null | head -40; exit 1; }
+
+command -v ldid >/dev/null || { echo "ERROR: ldid not found"; exit 1; }
 
 rm -rf build
 mkdir -p build
@@ -23,42 +32,39 @@ cp "$dmn" "$OUT/ARDaemon"
 cp "$pay" "$OUT/ARPayload.dylib"
 chmod +x "$OUT/ARHost" "$OUT/ARDaemon"
 
-echo "[1/4] 签名 ARHost（带 host entitlements）"
+echo
+echo "[1/4] sign ARHost"
 ldid -Shost/entitlements.plist "$OUT/ARHost"
 
-echo "[2/4] 签名 ARDaemon（带 daemon entitlements）"
+echo "[2/4] sign ARDaemon"
 ldid -Sdaemon/entitlements.plist "$OUT/ARDaemon"
 
-echo "[3/4] 签名 ARPayload.dylib（不挂 entitlements）"
+echo "[3/4] sign ARPayload.dylib"
 ldid -S "$OUT/ARPayload.dylib"
 
-echo "[4/4] 打 ipa 与 zip"
-# TrollStore 的 + 只吃 .ipa（结构必须是 Payload/ARHost.app），所以单独做一个
+echo "[4/4] pack ipa + zip"
 rm -rf build/ipa && mkdir -p build/ipa/Payload
 cp -a "$OUT" build/ipa/Payload/
 (cd build/ipa && zip -qry ../ARHost.ipa Payload)
-# 裸 app 包，给 TrollFools / 手动安装用
 (cd build && zip -qry ARHost-app.zip ARHost.app)
 
 echo
-echo "================ 校验 ================"
+echo "================ verify ================"
 for f in ARHost ARDaemon; do
   echo "--- $f entitlements ---"
-  ldid -e "$OUT/$f" | grep -E '<key>' | sed 's/^[[:space:]]*//' | sed 's#</\?key>##g'
+  ldid -e "$OUT/$f" | grep -E '<key>' | sed 's/^[[:space:]]*//' | sed 's#</\?key>##g' || true
 done
-echo "--- 架构（应为 ARM64 / 0x0100000c） ---"
+echo "--- arch (expect ARM64 / 0x0100000c) ---"
 for f in ARHost ARDaemon ARPayload.dylib; do
   printf '%-18s ' "$f"
   if command -v otool >/dev/null; then
     otool -hv "$OUT/$f" | awk 'NR==4{print $3, $4, $5}'
   else
-    echo "(无 otool)"
+    echo "(no otool)"
   fi
 done
 
 echo
-echo "================ 产物 ================"
+echo "================ artifacts ================"
 ls -lh build/ARHost.ipa build/ARHost-app.zip
-echo
-echo "装到 iPad：把 build/ARHost.ipa 传到设备 → TrollStore → Apps → 右上角 + → 选它"
 shasum -a 256 build/ARHost.ipa
