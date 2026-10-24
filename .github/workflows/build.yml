@@ -63,7 +63,5 @@ jobs:
         with:
           name: ARHost-release
           path: |
-            build/ARHost-A-ents.ipa
-            build/ARHost-B-vanilla.ipa
-            build/ARHost-app.zip
+            build/*.ipa
           if-no-files-found: error
