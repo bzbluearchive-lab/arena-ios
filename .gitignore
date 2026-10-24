@@ -1,0 +1,7 @@
+.theos/
+build/
+*.o
+*.dylib
+*.ipa
+.DS_Store
+Thumbs.db
