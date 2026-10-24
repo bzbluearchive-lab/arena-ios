@@ -2,6 +2,7 @@
 #include "Offsets.hpp"
 #include "../Core/SafeMem.h"
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <string.h>
 #include <stdio.h>
 #include <string>
