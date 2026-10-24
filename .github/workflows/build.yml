@@ -18,17 +18,17 @@ jobs:
           set -e
           export THEOS=$HOME/theos
           export PATH="/opt/homebrew/bin:$PATH"
-          echo "=== 环境 ==="
+          echo "=== environment ==="
           clang --version | head -1
           git --version
-          brew install ldid || brew upgrade ldid || echo "ldid 已存在"
-          echo "=== 克隆 theos ==="
+          brew install ldid || brew upgrade ldid || echo "ldid already present"
+          echo "=== clone theos ==="
           git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
-          echo "=== 拉 iOS SDK ==="
-          # theos 仓库自带一个 sdks 目录，直接 clone 到同一路径会报 exit 128，先删掉
+          echo "=== clone iOS SDKs ==="
+          # theos ships a sdks dir already; cloning into it fails with exit 128
           rm -rf "$THEOS/sdks"
           git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
-          echo "=== 结果 ==="
+          echo "=== result ==="
           ls -d "$THEOS/sdks"/iPhoneOS*.sdk
           which ldid clang make
 
@@ -45,9 +45,14 @@ jobs:
       - name: 校验产物
         run: |
           set -e
-          echo "--- app 包内容 ---"
+          echo "--- bundle contents ---"
           ls -la build/ARHost.app
-          echo "--- 架构（应为 ARM64 / 0x0100000c） ---"
+          # TrollStore 会因为缺 Info.plist 报 error 302，这里提前拦死
+          test -f build/ARHost.app/Info.plist || { echo "FATAL: Info.plist missing in bundle"; exit 1; }
+          plutil -lint build/ARHost.app/Info.plist
+          echo "--- ipa contents ---"
+          unzip -l build/ARHost.ipa
+          echo "--- arch (expect ARM64 / 0x0100000c) ---"
           for f in ARHost ARDaemon ARPayload.dylib; do
             printf '%-18s ' "$f"
             otool -hv "build/ARHost.app/$f" | awk 'NR==4{print $3, $4, $5}'

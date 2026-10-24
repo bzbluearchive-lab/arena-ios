@@ -2,35 +2,47 @@
 # Assemble the distributable package: ARHost.app (+ ARDaemon + ARPayload.dylib),
 # ldid-sign everything, emit .ipa and .zip.
 #
-# Discovery is find/glob-based on purpose: theos output paths and library file
-# names differ between versions and targets (arm64 vs arm64e, "lib" prefix or
-# not), so hard-coded paths are a common source of CI failure.
+# The .app bundle is built from scratch here on purpose:
+#   theos writes the final bundle (with Info.plist) under .theos/_/Applications/,
+#   while .theos/<dir>/obj only holds the linked executable. Copying the obj
+#   directory produces an app without Info.plist, which TrollStore rejects with
+#   "error 302: Info.plist not found". So: take the binary, add the plist ourselves.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT=build/ARHost.app
 
 echo "=== locate build outputs ==="
-app=$(find host/.theos/obj    -maxdepth 3 -name 'ARHost.app'         -type d 2>/dev/null | head -1 || true)
-dmn=$(find daemon/.theos/obj  -maxdepth 3 -name 'ARDaemon'           -type f 2>/dev/null | head -1 || true)
-pay=$(find payload/.theos/obj -maxdepth 3 -name '*ARPayload*.dylib'  -type f 2>/dev/null | head -1 || true)
+host_bin=$(find host/.theos/obj    -maxdepth 4 -name 'ARHost' -type f 2>/dev/null | head -1 || true)
+dmn=$(find daemon/.theos/obj  -maxdepth 4 -name 'ARDaemon' -type f 2>/dev/null | head -1 || true)
+pay=$(find payload/.theos/obj -maxdepth 4 -name '*ARPayload*.dylib' -type f 2>/dev/null | head -1 || true)
 
-echo "app     = ${app:-<missing>}"
+echo "host    = ${host_bin:-<missing>}"
 echo "daemon  = ${dmn:-<missing>}"
 echo "payload = ${pay:-<missing>}"
 
-[ -n "$app" ] || { echo "ERROR: ARHost.app not found"; ls -R host/.theos/obj 2>/dev/null | head -40; exit 1; }
-[ -n "$dmn" ] || { echo "ERROR: ARDaemon not found";   ls -R daemon/.theos/obj 2>/dev/null | head -40; exit 1; }
+[ -n "$host_bin" ] || { echo "ERROR: ARHost binary not found"; ls -R host/.theos/obj 2>/dev/null | head -40; exit 1; }
+[ -n "$dmn" ] || { echo "ERROR: ARDaemon not found";  ls -R daemon/.theos/obj 2>/dev/null | head -40; exit 1; }
 [ -n "$pay" ] || { echo "ERROR: payload dylib not found"; ls -R payload/.theos/obj 2>/dev/null | head -40; exit 1; }
 
 command -v ldid >/dev/null || { echo "ERROR: ldid not found"; exit 1; }
 
+echo
+echo "=== assemble app bundle ==="
 rm -rf build
-mkdir -p build
-cp -a "$app" "$OUT"
+mkdir -p "$OUT/PlugIns"
+cp "$host_bin" "$OUT/ARHost"
+cp host/Info.plist "$OUT/Info.plist"
 cp "$dmn" "$OUT/ARDaemon"
 cp "$pay" "$OUT/ARPayload.dylib"
 chmod +x "$OUT/ARHost" "$OUT/ARDaemon"
+
+# hard requirements for TrollStore
+[ -f "$OUT/Info.plist" ] || { echo "ERROR: Info.plist missing from bundle"; exit 1; }
+plutil -lint "$OUT/Info.plist"
+exec_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$OUT/Info.plist")
+[ "$exec_name" = "ARHost" ] || { echo "ERROR: CFBundleExecutable=$exec_name, expected ARHost"; exit 1; }
+echo "bundle ok: CFBundleExecutable=$exec_name"
 
 echo
 echo "[1/4] sign ARHost"
@@ -50,18 +62,19 @@ cp -a "$OUT" build/ipa/Payload/
 
 echo
 echo "================ verify ================"
-for f in ARHost ARDaemon; do
-  echo "--- $f entitlements ---"
-  ldid -e "$OUT/$f" | grep -E '<key>' | sed 's/^[[:space:]]*//' | sed 's#</\?key>##g' || true
-done
+echo "--- bundle contents ---"
+ls -la "$OUT"
+echo "--- ipa contents ---"
+unzip -l build/ARHost.ipa | head -20
 echo "--- arch (expect ARM64 / 0x0100000c) ---"
 for f in ARHost ARDaemon ARPayload.dylib; do
   printf '%-18s ' "$f"
-  if command -v otool >/dev/null; then
-    otool -hv "$OUT/$f" | awk 'NR==4{print $3, $4, $5}'
-  else
-    echo "(no otool)"
-  fi
+  otool -hv "$OUT/$f" | awk 'NR==4{print $3, $4, $5}'
+done
+echo "--- entitlements ---"
+for f in ARHost ARDaemon; do
+  echo "[$f]"
+  ldid -e "$OUT/$f" | grep -E '<key>' | sed 's/^[[:space:]]*//' | sed 's#</\?key>##g' || true
 done
 
 echo
