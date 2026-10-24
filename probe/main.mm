@@ -58,7 +58,12 @@
     MTLRenderPassDescriptor *rp = view.currentRenderPassDescriptor;
     if (!rp) return;
 
-    id<MTLCommandBuffer> cb = [view.device newCommandBuffer];
+    // 注意：MTKView.device 在不同 SDK 里可能退化成无类型的 id，
+    // 而 ARC 下对 id 发未知 selector 是**错误**而不是警告，所以这里显式转一次类型。
+    id<MTLDevice> dev = (id<MTLDevice>)view.device;
+    if (!dev) return;
+
+    id<MTLCommandBuffer> cb = [dev newCommandBuffer];
     if (!cb) return;
 
     rp.colorAttachments[0].clearColor = view.clearColor;
