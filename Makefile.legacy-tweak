@@ -1,0 +1,29 @@
+# 旧方案：把整包注入游戏的 theos tweak（形态 A）
+#
+# 已被"启动器 app + daemon + SpringBoard payload"取代（见 README-BUILD.md）。
+# 保留它是因为 src/Game 里的偏移解析、W2S、引擎链校验这些代码在新形态里同样要用，
+# 而这个 tweak 工程是验证那些代码最快的方式。
+#
+# 用法：make -f Makefile.legacy-tweak
+
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:16.5:15.0
+
+include $(THEOS)/makefiles/common.mk
+
+TWEAK_NAME = ARCheat
+
+ARCheat_FILES = \
+	src/Core/Stealth.mm \
+	src/Game/World.mm \
+	src/Game/Aim.mm \
+	src/Render/Overlay.mm \
+	Tweak.x
+
+ARCheat_CFLAGS = -fobjc-arc -std=c++17 -I. -Isrc -Ivendor -Ivendor/imgui
+ARCheat_CCFLAGS = -fno-exceptions -fno-rtti
+ARCheat_FRAMEWORKS = Foundation UIKit Metal MetalKit QuartzCore CoreGraphics
+ARCheat_PRIVATE_FRAMEWORKS = IOSurface
+ARCheat_LDFLAGS = -Wl,-segalign,0x4000
+
+include $(THEOS_MAKE_PATH)/tweak.mk
