@@ -1,0 +1,60 @@
+name: build
+
+# 用 GitHub 的 macOS runner 编译，本地零安装。
+# 用法：把整个工程推进一个（私有）仓库 → Actions 页面 → 跑完在 Artifacts 里下载
+#       ARHost-release → 里面就是 build/ARHost.zip
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 theos 与 iOS SDK
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          brew install ldid
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          # theos 官方 SDK 仓库，本地不需要 Xcode 的 .xip
+          git clone --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
+          ls "$THEOS/sdks"
+
+      - name: 静态自检
+        run: python3 tools/preflight.py
+
+      - name: 构建
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          make package
+
+      - name: 校验产物
+        run: |
+          set -e
+          echo "--- app 包内容 ---"
+          ls -la build/ARHost.app
+          echo "--- 架构（应为 ARM64） ---"
+          for f in ARHost ARDaemon ARPayload.dylib; do
+            printf '%-18s ' "$f"
+            otool -hv "build/ARHost.app/$f" | awk 'NR==4{print $3, $4, $5}'
+          done
+          echo "--- 签名状态 ---"
+          for f in ARHost ARDaemon; do
+            echo "[$f]"
+            codesign -d --entitlements - "build/ARHost.app/$f" 2>&1 | head -40 || ldid -e "build/ARHost.app/$f" | head -40
+          done
+
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARHost-release
+          path: |
+            build/ARHost.ipa
+            build/ARHost-app.zip
+          if-no-files-found: error
