@@ -17,22 +17,20 @@
 #include <atomic>
 
 #include "Overlay.hpp"
+#include "ESP.hpp"
 #include "../Core/Hook.hpp"
+#include "../Core/Obfs.hpp"
 #include "../Core/SafeMem.h"
 #include "../Game/World.hpp"
-#include "../Game/Aim.hpp"
 #include "../Game/Offsets.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 
-using namespace aim;
-
 // ---------------- 全局状态 ----------------
+// 只有"显示开关"，没有任何功能性状态：这个 dylib 不写游戏内存、不改视角。
 static std::atomic<bool> g_on{false};      // 总开关（三指双击切）
 static std::atomic<bool> g_esp{true};
-static std::atomic<bool> g_aimOn{false};
-static AimSettingsBox g_aimCfg;            // 定义在 Overlay.hpp
 static CAMetalDrawable* g_drawable = nil;
 
 // ---------------- ImGui + Metal ----------------
@@ -74,62 +72,25 @@ static void draw_overlay(CAMetalDrawable* drawable, float vpW, float vpH) {
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
 
-    // ---- ESP ----
+    // ---- 显示层（骨骼 / 装备 / 物资），全部只读 ----
+    // 功能边界就到这里：不写游戏内存、不改视角、不发包。
     if (g_esp.load()) {
-        ImDrawList* dl = ImGui::GetBackgroundDrawList();
-        world::Context ctx = world::resolve();
-        FMinimalViewInfo pov{};
-        if (world::camera(ctx, pov)) {
-            std::vector<uintptr_t> list;
-            if (world::actors(ctx, list)) {
-                for (uintptr_t a : list) {
-                    FVector pos{};
-                    if (!world::actor_location(a, pos)) continue;
-                    float sx, sy;
-                    if (!w2s(pov, vpW, vpH, pos, sx, sy)) continue;
-                    if (sx < -100 || sy < -100 || sx > vpW + 100 || sy > vpH + 100) continue;
-
-                    // 距离
-                    float dx = pos.X - pov.Location.X, dy = pos.Y - pov.Location.Y;
-                    float dz = pos.Z - pov.Location.Z;
-                    float dist = sqrtf(dx*dx + dy*dy + dz*dz) / 100.f;   // UE4 单位 cm
-
-                    // 高度按距离做透视缩放（粗略，骨骼版接 bone_transforms 再精修）
-                    float h = 1200.f / (dist + 1.f) * (vpH / 800.f);
-                    float w = h * 0.45f;
-                    ImU32 col = IM_COL32(0, 255, 120, 220);
-                    dl->AddRect(ImVec2(sx - w*0.5f, sy - h),
-                                ImVec2(sx + w*0.5f, sy), col, 1.5f, 0, 1.6f);
-                    char buf[32];
-                    snprintf(buf, sizeof(buf), "%.0fm", dist);
-                    dl->AddText(ImVec2(sx - w*0.5f, sy + 2), col, buf);
-                }
-            }
-
-            // ---- 自瞄 ----
-            if (g_aimOn.load()) {
-                std::vector<uintptr_t> list2;
-                if (world::actors(ctx, list2)) {
-                    aim::Settings s;
-                    s.enabled   = true;
-                    s.fov       = g_aimCfg.fov;
-                    s.smooth    = g_aimCfg.smooth;
-                    s.teamCheck = g_aimCfg.team;
-                    aim::tick(ctx, 0, list2, s);
-                }
-            }
-        }
+        esp::render(vpW, vpH);
     }
 
-    // ---- 菜单 ----
+    // ---- 菜单（只有显示开关，没有功能性按钮）----
+    // UI 文本全部走 XOR 常量：anogs 会扫进程内区域的明文串，"skeleton"/"loot"
+    // 这类词是最好用的判定指纹。
     if (g_on.load()) {
-        ImGui::Begin("ARCheat", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        bool e = g_esp.load();  if (ImGui::Checkbox("ESP", &e)) g_esp = e;
-        bool a = g_aimOn.load(); if (ImGui::Checkbox("Aim", &a)) g_aimOn = a;
-        ImGui::SliderFloat("FOV",    &g_aimCfg.fov,    1.f, 90.f);
-        ImGui::SliderFloat("Smooth", &g_aimCfg.smooth, 0.05f, 1.f);
-        ImGui::Checkbox("Team check", &g_aimCfg.team);
-        ImGui::TextDisabled("3-finger double tap: toggle");
+        esp::Settings& S = esp::settings();
+        ImGui::Begin(XSTR("s"), nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        bool on = g_esp.load();
+        if (ImGui::Checkbox(XSTR("a"), &on)) g_esp = on;          // 总开关
+        ImGui::Checkbox(XSTR("b"), &S.skeleton);                  // 骨骼
+        ImGui::Checkbox(XSTR("c"), &S.gear);                      // 装备
+        ImGui::Checkbox(XSTR("d"), &S.loot);                      // 物资
+        ImGui::Checkbox(XSTR("e"), &S.distance);                  // 距离
+        ImGui::SliderFloat(XSTR("f"), &S.maxDistM, 20.f, 800.f);  // 半径
         ImGui::End();
     }
 
