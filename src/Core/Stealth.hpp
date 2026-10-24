@@ -21,11 +21,16 @@
 namespace stealth {
 
 struct Options {
-    bool filter_dyld_view = false;  // 默认关。开之前先读完上面的说明。
-    bool deny_ptrace      = true;   // PT_DENY_ATTACH
-    bool clear_p_traced   = true;   // sysctl 回读清 P_TRACED 位
-    bool scrub_env        = true;   // 清 DYLD_INSERT_LIBRARIES 等环境变量
-    bool hide_trollstore  = true;   // stat/fopen 对 TrollStore 路径返回不存在
+    // dyld 视图过滤默认关：anogs 交叉比对三份视图，抹自己制造矛盾，负收益
+    bool filter_dyld_view = false;
+
+    // 反调试两项默认关。生产环境不挂调试器就不需要；而"主动调 PT_DENY_ATTACH /
+    // 把 P_TRACED 清零"在没有调试器的场景下本身就是可被反查的多余动作。
+    bool deny_ptrace      = false;
+    bool clear_p_traced   = false;
+
+    bool scrub_env        = true;   // 清 DYLD_INSERT_LIBRARIES 等，零成本
+    bool hide_trollstore  = true;   // TrollStore / 越狱痕迹是真信号，必须拦
 };
 
 // 在 constructor 里尽早调用（越早拦截窗口越小）
