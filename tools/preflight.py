@@ -27,9 +27,9 @@ def chk(cond, msg, hard=True):
 # ---------- 1. 结构 ----------
 need = [
     "Makefile",
-    "host/Makefile", "host/main.m", "host/Info.plist", "host/entitlements.plist",
-    "daemon/Makefile", "daemon/main.m", "daemon/entitlements.plist",
-    "payload/Makefile",
+    "host/Makefile", "host/main.mm", "host/Info.plist", "host/entitlements.plist",
+    "daemon/Makefile", "daemon/main.mm", "daemon/entitlements.plist",
+    "payload/Makefile", "payload/SBWindow.mm",
     "src/Inject/SBWindow.mm", "src/Inject/RemoteLoad.h",
     "src/Host/DaemonSpawn.h",
     "tools/package.sh",
@@ -114,7 +114,7 @@ def find_headers(base, txt):
 
 
 for rel in ["src/Inject/SBWindow.mm", "src/Inject/RemoteLoad.h",
-            "src/Host/DaemonSpawn.h", "daemon/main.m", "host/main.m"]:
+            "src/Host/DaemonSpawn.h", "daemon/main.mm", "host/main.mm"]:
     fp = os.path.join(ROOT, rel)
     if not os.path.exists(fp):
         continue
