@@ -1,0 +1,57 @@
+name: build-probe
+
+# 只做一件事：把 probe/ 这个 MTKView 空壳 app 打成可安装的 ARProbe.ipa。
+# 用途是验证注入链路（TrollFools 注入 -> dylib 加载 -> Metal 挂点 -> ImGui 叠加），
+# 不涉及游戏、不涉及偏移。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 theos 与 iOS SDK
+        run: |
+          set -e
+          export PATH="/opt/homebrew/bin:$PATH"
+          brew install ldid || brew upgrade ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+          ls -d "$HOME/theos/sdks"/iPhoneOS*.sdk
+
+      - name: 编译 ARProbe.app
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          make -C probe
+          find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d
+
+      - name: 组装 ipa
+        run: |
+          set -e
+          APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1)
+          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; find probe/.theos/obj -maxdepth 4; exit 1; }
+          echo "app=$APP"
+          rm -rf Payload ARProbe.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Payload/ARProbe.app/Info.plist
+          ldid -S Payload/ARProbe.app/ARProbe || echo "ldid failed (non-fatal for TrollStore)"
+          otool -hv Payload/ARProbe.app/ARProbe | tail -3
+          zip -qry ARProbe.ipa Payload
+          ls -la ARProbe.ipa
+          unzip -l ARProbe.ipa | head -12
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARProbe-ipa
+          path: ARProbe.ipa
+          if-no-files-found: error
