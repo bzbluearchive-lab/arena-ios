@@ -35,16 +35,30 @@ jobs:
       - name: 组装 ipa
         run: |
           set -e
-          APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1)
-          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; find probe/.theos/obj -maxdepth 4; exit 1; }
+          # 优先用 theos 的 staging 目录（那里才是完整 bundle：Info.plist + 二进制）
+          APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1)
+          fi
+          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; find probe/.theos -maxdepth 5 -name '*.app'; exit 1; }
           echo "app=$APP"
+
           rm -rf Payload ARProbe.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
+
+          # theos 的 application.mk 不一定把 Info.plist 拷进 bundle，缺了 ipa 就装不上
+          if [ ! -f Payload/ARProbe.app/Info.plist ]; then
+            echo "Info.plist missing in bundle -> copying from probe/Info.plist"
+            cp probe/Info.plist Payload/ARProbe.app/Info.plist
+          fi
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
           /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Payload/ARProbe.app/Info.plist
+
+          ls -la Payload/ARProbe.app
           ldid -S Payload/ARProbe.app/ARProbe || echo "ldid failed (non-fatal for TrollStore)"
           otool -hv Payload/ARProbe.app/ARProbe | tail -3
+
           zip -qry ARProbe.ipa Payload
           ls -la ARProbe.ipa
           unzip -l ARProbe.ipa | head -12
