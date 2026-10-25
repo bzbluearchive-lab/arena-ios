@@ -79,6 +79,10 @@ static void imgui_bringup(id<MTLDevice> dev) {
     if (g_r.init || !dev) return;
     g_r.device = dev;
     g_r.queue  = [dev newCommandQueue];
+    if (!g_r.queue) {
+        NSLog(@"[ovl] FATAL: newCommandQueue returned nil");
+        return;
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -87,20 +91,34 @@ static void imgui_bringup(id<MTLDevice> dev) {
     io.LogFilename = nullptr;
     ImGui::StyleColorsDark();
 
+    // 后端初始化 + 显式建设备对象（字形纹理、pipeline）。
+    // 少了这一步，第一帧走 RenderDrawData 就会在 nil pipeline / nil font texture 上崩，
+    // 表现就是"app 显示一秒画面然后闪退"——上次就是这么崩的。
     ImGui_ImplMetal_Init(dev);
+    ImGui_ImplMetal_CreateDeviceObjects();
+
     g_r.init = true;
+    NSLog(@"[ovl] imgui ready dev=%@ queue=%@", dev, g_r.queue);
 }
 
 static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
     if (!g_r.init || !drawable) return;
+    if (vpW < 2.f || vpH < 2.f) return;
 
     id<MTLCommandBuffer> cb = [g_r.queue commandBuffer];
     if (!cb) return;
 
     MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
     rpd.colorAttachments[0].texture     = [drawable texture];
+    if (!rpd.colorAttachments[0].texture) return;              // 没有纹理就别往下走
     rpd.colorAttachments[0].loadAction  = MTLLoadActionLoad;    // 保住游戏画面
     rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    // DisplaySize 必须自己给：ImGui 后端不会设它。留 0 的话窗口尺寸算出来是 0，
+    // 菜单"存在但看不见"，同时 CalcTextSize/布局都会走异常分支。
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(vpW, vpH);
+    io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
 
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
