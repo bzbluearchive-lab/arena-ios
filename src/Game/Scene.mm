@@ -111,8 +111,14 @@ bool scan(const world::Context& c, const FMinimalViewInfo& pov,
     if (!world::actors(c, actors) || actors.empty()) return false;
 
     if (!ue::fname::ready()) {
-        uintptr_t pool = ue::fname::locate();
-        if (pool) ue::fname::set_base(pool);
+        // locate() 会遍历整个 __DATA 段，不能每帧跑：探针 app 里还好，游戏里
+        // 那是几十 MB 的指针扫描，一帧几十毫秒起步。这里限流成每 120 帧一次。
+        static int cooldown = 0;
+        if (cooldown-- <= 0) {
+            cooldown = 120;
+            uintptr_t pool = ue::fname::locate();
+            if (pool) ue::fname::set_base(pool);
+        }
     }
 
     // 第一遍：认玩家（有 SkeletalMeshComponent 且类名像玩家）
