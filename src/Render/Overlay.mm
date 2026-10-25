@@ -94,11 +94,14 @@ static void imgui_bringup(id<MTLDevice> dev) {
     // 后端初始化 + 显式建设备对象（字形纹理、pipeline）。
     // 少了这一步，第一帧走 RenderDrawData 就会在 nil pipeline / nil font texture 上崩，
     // 表现就是"app 显示一秒画面然后闪退"——上次就是这么崩的。
+    // 注意 1.90.9 的签名是 CreateDeviceObjects(device) -> bool，不是无参版本。
     ImGui_ImplMetal_Init(dev);
-    ImGui_ImplMetal_CreateDeviceObjects();
+    const bool objsOk = ImGui_ImplMetal_CreateDeviceObjects(dev);
+    NSLog(@"[ovl] imgui init dev=%@ deviceObjects=%d", dev, (int)objsOk);
+    if (!objsOk) return;          // 没建成就不画，避免在 nil pipeline 上崩
 
     g_r.init = true;
-    NSLog(@"[ovl] imgui ready dev=%@ queue=%@", dev, g_r.queue);
+    NSLog(@"[ovl] imgui ready queue=%@", g_r.queue);
 }
 
 static void draw_overlay(ARDrawableRef drawable, float vpW, float vpH) {
