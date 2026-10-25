@@ -303,6 +303,12 @@ static NSString* runProbe(void) {
 @end
 @implementation ProbeDelegate { UIWindow* _w; }
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)o {
+    // 启动即写一条日志：如果装完点开就闪退、连这条都没有，说明是签名/entitlement
+    // 或 arm64e 切片的问题，不是探测逻辑
+    NSString* p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                   stringByAppendingPathComponent:@"probe.log"];
+    [[NSString stringWithFormat:@"launch ok pid=%d uid=%d\n", getpid(), getuid()]
+        writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil];
     _w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     _w.rootViewController = [ProbeVC new];
     [_w makeKeyAndVisible];
