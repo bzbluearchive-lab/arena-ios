@@ -89,7 +89,7 @@ static bool rdstr(Remote& r, uint64_t a, char* out, size_t cap) {
 static pid_t find_pid_sysctl(const char* needle, int* outCount, char* sample, size_t sampleCap) {
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
     size_t sz = 0;
-    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0) { if (outCount) *outCount = -1; return 0; }
+    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0) { if (outCount) *outCount = -errno; return 0; }
     if (sz == 0 || sz > (64u << 20)) { if (outCount) *outCount = -2; return 0; }
     struct kinfo_proc* procs = (struct kinfo_proc*)malloc(sz);
     if (!procs) { if (outCount) *outCount = -3; return 0; }
@@ -263,6 +263,17 @@ static void scan_fields(Remote& r, uint64_t obj, const char* key,
 // ---- main probe ----
 static NSString* runProbe(BOOL deep) {
     Remote r;
+    // --- diagnostics: separate "permission missing" from "code broken" ---
+    errno = 0;
+    int lpCount = proc_listallpids(NULL, 0);
+    int lpErr = errno;
+    L(@"diag proc_listallpids=%d errno=%d(%s)", lpCount, lpErr, strerror(lpErr));
+    {
+        task_t selfTask = MACH_PORT_NULL;
+        kern_return_t sKr = task_for_pid(mach_task_self(), getpid(), &selfTask);
+        L(@"diag tfp(self) -> %s (%d)", mach_error_string(sKr), sKr);
+        if (sKr == KERN_SUCCESS && selfTask != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), selfTask);
+    }
     // 1) enumerate with sysctl (works in sandbox, gives p_comm)
     int nproc = 0;
     char sample[1024];
