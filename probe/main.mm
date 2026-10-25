@@ -355,6 +355,11 @@ static NSString* runProbe(BOOL deep) {
 
 int main(int argc, char* argv[]) {
     @autoreleasepool {
+        {   // write immediately: if this line is missing, we died in dyld/AMFI
+            NSString* p0 = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject];
+            [[NSString stringWithFormat:@"main() entered pid=%d uid=%d\n", getpid(), getuid()]
+                writeToFile:[p0 stringByAppendingPathComponent:@"main.log"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([ProbeDelegate class]));
     }
 }
