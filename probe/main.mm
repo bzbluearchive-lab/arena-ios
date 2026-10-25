@@ -295,7 +295,7 @@ static NSString* runProbe(BOOL deep) {
     _tv.textColor = [UIColor colorWithRed:0.3 green:1.0 blue:0.5 alpha:1.0];
     _tv.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _tv.editable = NO;
-    _tv.text = @"1) start the game, wait until you are in the lobby\n2) tap Light first, then Deep\n3) send Documents/probe.log";
+    _tv.text = [NSString stringWithFormat:@"build %@\n1) start the game, wait until you are in the lobby\n2) tap Light first, then Deep\n3) send Documents/probe.log", [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?"];
     [self.view addSubview:_tv];
 
     UIButton* b1 = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -342,7 +342,9 @@ static NSString* runProbe(BOOL deep) {
                 stringByAppendingPathComponent:@"probe.log"];
     if (!gLog) gLog = [NSMutableString new];
     [gLog setString:@""];
-    L(@"launch ok pid=%d uid=%d", getpid(), getuid());
+    NSString* ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?";\
+    NSString* disp = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"?";\
+    L(@"launch ok pid=%d uid=%d ver=%@ name=%@", getpid(), getuid(), ver, disp);
 
     _w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     _w.rootViewController = [ProbeVC new];
