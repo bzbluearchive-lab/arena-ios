@@ -12,7 +12,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-// iPhoneOS SDK 釁E<mach/mach_vm.h> 被栁E�E unsupported�E�Elibproc.h> 也不存在�E�E// 这里直接声明要用皁E��号�E�EibSystem 里�E有实现�E�、Eextern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
+// SDK header workaround
+extern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
                                                mach_vm_address_t address,
                                                mach_vm_size_t size,
                                                mach_vm_address_t data,
