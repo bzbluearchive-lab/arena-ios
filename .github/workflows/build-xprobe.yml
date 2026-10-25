@@ -1,0 +1,61 @@
+name: build-xprobe
+
+# 只构建跨进程探针 app（ARProbe.ipa），带 task_for_pid entitlement。
+# 不构建 tweak、不需要游戏 IPA。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 theos 与 iOS SDK
+        run: |
+          set -e
+          export PATH="/opt/homebrew/bin:$PATH"
+          brew install ldid || brew upgrade ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+          ls -d "$HOME/theos/sdks"/iPhoneOS*.sdk
+
+      - name: 构建 ARProbe
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          make -C probe
+          APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1); fi
+          test -n "$APP" || { echo "FATAL: ARProbe.app not found"; exit 1; }
+          echo "app=$APP"
+          ls -la "$APP"
+
+      - name: 组装 ipa（带 entitlement 重签）
+        run: |
+          set -e
+          APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1); fi
+          rm -rf Payload ARProbe.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          find Payload -name '*.dSYM' -type d -exec rm -rf {} + 2>/dev/null || true
+          if [ ! -f Payload/ARProbe.app/Info.plist ]; then cp probe/Info.plist Payload/ARProbe.app/Info.plist; fi
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
+          echo "--- entitlements ---"
+          ldid -Sprobe/entitlements.plist Payload/ARProbe.app/ARProbe
+          ldid -e Payload/ARProbe.app/ARProbe | head -20
+          otool -hv Payload/ARProbe.app/ARProbe | tail -2
+          zip -qry ARProbe.ipa Payload
+          ls -la ARProbe.ipa
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARProbe-xprobe
+          path: ARProbe.ipa
+          if-no-files-found: error
