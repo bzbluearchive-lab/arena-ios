@@ -12,12 +12,21 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
 #include <mach/task_info.h>
-#include <libproc.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+// iPhoneOS SDK 里 <mach/mach_vm.h> 被标成 unsupported，<libproc.h> 也不存在，
+// 这里直接声明要用的符号（libSystem 里都有实现）。
+extern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
+                                               mach_vm_address_t address,
+                                               mach_vm_size_t size,
+                                               mach_vm_address_t data,
+                                               mach_vm_size_t *outsize);
+#define PROC_PIDPATHINFO_MAXSIZE 4096
+extern "C" int proc_listallpids(void *buffer, int buffersize);
+extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 
 // ---------------- 静态已知量（相对主镜像 0x100000000） ----------------
 static const uint64_t kStaticBase   = 0x100000000ULL;
