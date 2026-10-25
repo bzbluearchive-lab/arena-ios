@@ -35,26 +35,37 @@ jobs:
           echo "app=$APP"
           ls -la "$APP"
 
-      - name: 组装 ipa（带 entitlement 重签）
+      - name: 组装 ipa（带 entitlement 重签 + 版本号）
         run: |
           set -e
           APP=$(find probe/.theos/_/Applications -maxdepth 1 -name 'ARProbe.app' -type d 2>/dev/null | head -1)
           if [ -z "$APP" ]; then APP=$(find probe/.theos/obj -maxdepth 4 -name 'ARProbe.app' -type d | head -1); fi
-          rm -rf Payload ARProbe.ipa
+          VER=$(tr -d ' \n\r' < probe/VERSION)
+          echo "build version = $VER"
+          rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
           find Payload -name '*.dSYM' -type d -exec rm -rf {} + 2>/dev/null || true
           if [ ! -f Payload/ARProbe.app/Info.plist ]; then cp probe/Info.plist Payload/ARProbe.app/Info.plist; fi
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.$VER" Payload/ARProbe.app/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/ARProbe.app/Info.plist
           echo "--- entitlements ---"
           ldid -Sprobe/entitlements.plist Payload/ARProbe.app/ARProbe
           ldid -e Payload/ARProbe.app/ARProbe | head -20
           otool -hv Payload/ARProbe.app/ARProbe | tail -2
-          zip -qry ARProbe.ipa Payload
-          ls -la ARProbe.ipa
+          OUT="ARProbe-xprobe-v${VER}.ipa"
+          zip -qry "$OUT" Payload
+          ls -la "$OUT"
+          echo "IPA_NAME=$OUT" >> $GITHUB_ENV
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_NAME }}
+          path: ${{ env.IPA_NAME }}
+          if-no-files-found: error
         with:
           name: ARProbe-xprobe
           path: ARProbe.ipa
