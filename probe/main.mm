@@ -1,13 +1,8 @@
-// probe/main.mm —— 跨进程偏移探针（不注入游戏、不需要游戏 IPA）
+// probe/main.mm — E跨进程偏移探针（不注入游戏、不需要游戁EIPA�E�E//
+// 原理�E�E//   1. task_for_pid 拿游戏进稁Etask port�E�需要ETrollStore 皁Eentitlement�E�E//   2. 读游戏进稁Edyld_all_image_infos ↁE找到 UAGame 主镜像加载地址
+//   3. 读 GEngine�E�静态偏移 0x10dbf9a58 相对 0x100000000�E�E//   4. 在 __bss 里找 FNamePool�E�判据�E�Blocks[0] 皁Eentry0 解出 "None"�E�E//   5. 用 FName 解析对象类名，逐个验证候选偏移——类名对得上才算对
 //
-// 原理：
-//   1. task_for_pid 拿游戏进程 task port（需要 TrollStore 的 entitlement）
-//   2. 读游戏进程 dyld_all_image_infos → 找到 UAGame 主镜像加载地址
-//   3. 读 GEngine（静态偏移 0x10dbf9a58 相对 0x100000000）
-//   4. 在 __bss 里找 FNamePool（判据：Blocks[0] 的 entry0 解出 "None"）
-//   5. 用 FName 解析对象类名，逐个验证候选偏移——类名对得上才算对
-//
-// 输出：界面报告 + Documents/probe.log
+// 输�E�E�界面报呁E+ Documents/probe.log
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -17,9 +12,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-// iPhoneOS SDK 里 <mach/mach_vm.h> 被标成 unsupported，<libproc.h> 也不存在，
-// 这里直接声明要用的符号（libSystem 里都有实现）。
-extern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
+// iPhoneOS SDK 釁E<mach/mach_vm.h> 被栁E�E unsupported�E�Elibproc.h> 也不存在�E�E// 这里直接声明要用皁E��号�E�EibSystem 里�E有实现�E�、Eextern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
                                                mach_vm_address_t address,
                                                mach_vm_size_t size,
                                                mach_vm_address_t data,
@@ -28,14 +21,21 @@ extern "C" kern_return_t mach_vm_read_overwrite(vm_map_t target_task,
 extern "C" int proc_listallpids(void *buffer, int buffersize);
 extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 
-// ---------------- 静态已知量（相对主镜像 0x100000000） ----------------
+// ---------------- 静态已知量（相对主镜像 0x100000000�E�E----------------
 static const uint64_t kStaticBase   = 0x100000000ULL;
-static const uint64_t kOffGEngine   = 0x10dbf9a58ULL;   // 已验证
-static const uint64_t kOffBssStart  = 0x10D32C880ULL;   // __DATA.__bss
+static const uint64_t kOffGEngine   = 0x10dbf9a58ULL;   // 已验证Estatic const uint64_t kOffBssStart  = 0x10D32C880ULL;   // __DATA.__bss
 static const uint64_t kOffBssEnd    = 0x10DACAF70ULL;   // __bss + __common
 
-// ---------------- 日志 ----------------
+// ---------------- 日忁E----------------
 static NSMutableString* gLog = nil;
+static NSString* gLogPath = nil;
+
+// 立即写盘�E�崩亁E���E看到停在哪个步骤
+static void flushLog(void) {
+    if (!gLogPath) return;
+    [gLog writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 static void L(NSString* fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString* s = [[NSString alloc] initWithFormat:fmt arguments:ap];
@@ -43,6 +43,7 @@ static void L(NSString* fmt, ...) {
     [gLog appendString:s];
     [gLog appendString:@"\n"];
     NSLog(@"[probe] %@", s);
+    flushLog();
 }
 
 // ---------------- 跨进程读 ----------------
@@ -190,8 +191,7 @@ static bool obj_own_name(Remote& r, uint64_t obj, char* out, size_t cap) {
     return fname_get(r, rd32(r, obj + 0x18), out, cap);
 }
 
-// 在对象里扫指针字段：找类名匹配 key 的成员
-static void scan_fields(Remote& r, uint64_t obj, const char* key,
+// 在对象里扫持E��字段�E�找类名匹酁Ekey 皁E�E呁Estatic void scan_fields(Remote& r, uint64_t obj, const char* key,
                         uint64_t maxOff, const char* tag) {
     for (uint64_t off = 0; off < maxOff; off += 8) {
         uint64_t p = rd64(r, obj + off);
@@ -206,17 +206,17 @@ static void scan_fields(Remote& r, uint64_t obj, const char* key,
     }
 }
 
-// ---------------- 主探测 ----------------
-static NSString* runProbe(void) {
+// ---------------- 主探流E----------------
+static NSString* runProbe(BOOL deep) {
     Remote r;
     r.pid = find_pid("/UAGame");
     if (!r.pid) r.pid = find_pid("/Arena");
     L(@"target pid = %d", r.pid);
-    if (!r.pid) { L(@"没找到游戏进程，先启动游戏并进大厅"); return gLog; }
+    if (!r.pid) { L(@"没找到游戏进程，�E启动游戏并进大厁E); return gLog; }
 
     kern_return_t kr = task_for_pid(mach_task_self(), r.pid, &r.task);
     L(@"task_for_pid -> %s (%d)", mach_error_string(kr), kr);
-    if (kr != KERN_SUCCESS) { L(@"tfp 失败：entitlement 不足"); return gLog; }
+    if (kr != KERN_SUCCESS) { L(@"tfp 失败�E�entitlement 不足"); return gLog; }
     r.ok = true;
 
     r.base = find_image_base(r, "UAGame");
@@ -224,12 +224,12 @@ static NSString* runProbe(void) {
     L(@"image base = 0x%llx", r.base);
     if (!r.base) { L(@"没定位到主镜像"); return gLog; }
 
-    gNames = locate_gnames(r);
+    if (deep) { gNames = locate_gnames(r); } else { L(@"light mode: skip FName scan"); }
 
     uint64_t slot   = r.base + (kOffGEngine - kStaticBase);
     uint64_t engine = rd64(r, slot);
     L(@"GEngine 槽 0x%llx -> 0x%llx", slot, engine);
-    if (!engine) { L(@"GEngine 为空（可能还在启动界面）"); return gLog; }
+    if (!engine) { L(@"GEngine 为空�E�可能还在启动界面�E�E); return gLog; }
 
     char nm[128] = {0};
     if (gNames && obj_class_name(r, engine, nm, sizeof(nm))) L(@"GEngine class = %s", nm);
@@ -237,7 +237,7 @@ static NSString* runProbe(void) {
 
     const uint64_t cands[] = { 0x10, 0x50, 0x178, 0x370, 0x388, 0x680, 0x788,
                                0xb50, 0xb60, 0xb80, 0xcb8, 0xe80, 0x2a8, 0x5f8 };
-    L(@"--- GEngine 字段探测 ---");
+    L(@"--- GEngine 字段探流E---");
     for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
         uint64_t p = rd64(r, engine + cands[i]);
         if (p < 0x100000000ULL || p > 0x8000000000ULL) continue;
@@ -247,7 +247,7 @@ static NSString* runProbe(void) {
         L(@"+0x%llx -> 0x%llx class=%s name=%s", cands[i], p,
           have ? cls : "?", own[0] ? own : "-");
         if (have && strstr(cls, "World")) {
-            L(@"  ^^^ 这是 World，开始扫它的字段");
+            L(@"  ^^^ 这是 World�E�开始扫宁E��字段");
             scan_fields(r, p, "Level", 0x400, "World");
         }
     }
@@ -272,27 +272,41 @@ static NSString* runProbe(void) {
     _tv.textColor = [UIColor colorWithRed:0.3 green:1.0 blue:0.5 alpha:1.0];
     _tv.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _tv.editable = NO;
-    _tv.text = @"先启动游戏并进到大厅，再点「开始探测」";
+    _tv.text = @"先启动游戏并进到大厁E���E点「开始探测、E;
     [self.view addSubview:_tv];
 
     UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
     b.frame = CGRectMake(16, 60, 180, 44);
-    [b setTitle:@"开始探测" forState:UIControlStateNormal];
-    [b addTarget:self action:@selector(run:) forControlEvents:UIControlEventTouchUpInside];
+    [b setTitle:@"开始探流E forState:UIControlStateNormal];
+    [b addTarget:self action:@selector(runLight:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:b];
+
+    UIButton* b2 = [UIButton buttonWithType:UIButtonTypeSystem];
+    b2.frame = CGRectMake(200, 60, 180, 44);
+    [b2 setTitle:@"�A �[�x?�`" forState:UIControlStateNormal];
+    [b2 addTarget:self action:@selector(runDeep:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:b2];
     [self.view addSubview:b];
 }
 
-- (void)run:(id)sender {
+- (void)runLight:(id)sender { [self start:NO]; }
+- (void)runDeep:(id)sender  { [self start:YES]; }
+- (void)start:(BOOL)deep {
     _tv.text = @"探测中…";
+    // 先在主线程准夁E��日志文件路征E+ 第一条记录，�E进后台线稁E
+        if (!gLogPath) {
+        gLogPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                    stringByAppendingPathComponent:@"probe.log"];
+    }
+    if (!gLog) gLog = [NSMutableString new];
+    [gLog setString:@""];
+    L(@"=== probe start ===");
+
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
-        if (!gLog) gLog = [NSMutableString new];
-        [gLog setString:@""];
-        NSString* rep = runProbe();
-        NSString* path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
-                          stringByAppendingPathComponent:@"probe.log"];
-        [rep writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString* rep = runProbe(deep);
+        L(@"=== probe end ===");
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_tv.text = [NSString stringWithFormat:@"%@\n\n已写入 Documents/probe.log", rep];
+            self->_tv.text = [NSString stringWithFormat:@"%@\n\n已写�E Documents/probe.log", rep];
         });
     });
 }
@@ -303,9 +317,8 @@ static NSString* runProbe(void) {
 @end
 @implementation ProbeDelegate { UIWindow* _w; }
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)o {
-    // 启动即写一条日志：如果装完点开就闪退、连这条都没有，说明是签名/entitlement
-    // 或 arm64e 切片的问题，不是探测逻辑
-    NSString* p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+    // 启动即写一条日志：如果裁E��点开就闪退、连这条都没有，说明是签吁Eentitlement
+    // 戁Earm64e 刁E��皁E��题，不是探测逻辁E    NSString* p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
                    stringByAppendingPathComponent:@"probe.log"];
     [[NSString stringWithFormat:@"launch ok pid=%d uid=%d\n", getpid(), getuid()]
         writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil];
