@@ -49,6 +49,7 @@ jobs:
           if [ ! -f Payload/ARProbe.app/Info.plist ]; then cp probe/Info.plist Payload/ARProbe.app/Info.plist; fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" Payload/ARProbe.app/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.local.arprobe.v$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ARProbe-v$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleName ARProbe-v$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Payload/ARProbe.app/Info.plist
