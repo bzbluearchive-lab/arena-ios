@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 只留 task_for_pid 必需的三个。no-sandbox / no-container 这类会被 launchd 直接拒掉，
+	     表现为装完点开就闪退，所以不要加。 -->
+	<key>platform-application</key><true/>
+	<key>com.apple.private.cs.debugger</key><true/>
+	<key>task_for_pid-allow</key><true/>
+	<key>get-task-allow</key><true/>
+</dict>
+</plist>
