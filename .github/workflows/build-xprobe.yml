@@ -56,8 +56,15 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/ARProbe.app/Info.plist
           /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' Payload/ARProbe.app/Info.plist
           echo "--- entitlements ---"
-          ldid -Sprobe/entitlements.plist Payload/ARProbe.app/ARProbe
-          ldid -e Payload/ARProbe.app/ARProbe | head -20
+          USE_ENT=$(tr -d ' \n\r' < probe/ENTITLEMENTS 2>/dev/null || echo 0)
+          if [ "$USE_ENT" = "1" ] && [ -f probe/entitlements.tfp.plist ]; then
+            echo "signing WITH tfp entitlements"
+            ldid -Sprobe/entitlements.tfp.plist Payload/ARProbe.app/ARProbe
+          else
+            echo "signing WITHOUT entitlements (adhoc)"
+            ldid -S Payload/ARProbe.app/ARProbe
+          fi
+          ldid -e Payload/ARProbe.app/ARProbe | head -20 || true
           otool -hv Payload/ARProbe.app/ARProbe | tail -2
           OUT="ARProbe-xprobe-v${VER}.ipa"
           zip -qry "$OUT" Payload
