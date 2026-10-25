@@ -15,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
 #include <mach/task_info.h>
+#include <sys/sysctl.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -81,6 +82,39 @@ static bool rdstr(Remote& r, uint64_t a, char* out, size_t cap) {
     if (!rd(r, a, out, cap - 1)) return false;
     out[cap - 1] = 0;
     return out[0] != 0;
+}
+
+// Enumerate processes via sysctl(KERN_PROC_ALL). Works inside the sandbox and does
+// not need proc_pidpath (which is often denied for other processes).
+static pid_t find_pid_sysctl(const char* needle, int* outCount, char* sample, size_t sampleCap) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t sz = 0;
+    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0) { if (outCount) *outCount = -1; return 0; }
+    if (sz == 0 || sz > (64u << 20)) { if (outCount) *outCount = -2; return 0; }
+    struct kinfo_proc* procs = (struct kinfo_proc*)malloc(sz);
+    if (!procs) { if (outCount) *outCount = -3; return 0; }
+    if (sysctl(mib, 4, procs, &sz, NULL, 0) != 0) { free(procs); if (outCount) *outCount = -4; return 0; }
+    int n = (int)(sz / sizeof(struct kinfo_proc));
+    if (outCount) *outCount = n;
+    pid_t hit = 0;
+    if (sample && sampleCap) sample[0] = 0;
+    int shown = 0;
+    for (int i = 0; i < n; i++) {
+        char comm[17];
+        memcpy(comm, procs[i].kp_proc.p_comm, 16);
+        comm[16] = 0;
+        if (comm[0] == 0) continue;
+        if (sample && sampleCap && shown < 14) {
+            size_t cur = strlen(sample);
+            snprintf(sample + cur, sampleCap - cur, "%s(%d) ", comm, procs[i].kp_proc.p_pid);
+            shown++;
+        }
+        if (hit == 0 && needle && needle[0] && strstr(comm, needle)) hit = procs[i].kp_proc.p_pid;
+        if (hit == 0 && strstr(comm, "Arena")) hit = procs[i].kp_proc.p_pid;
+        if (hit == 0 && strstr(comm, "UAGame")) hit = procs[i].kp_proc.p_pid;
+    }
+    free(procs);
+    return hit;
 }
 
 static pid_t find_pid(const char* needle) {
@@ -229,10 +263,20 @@ static void scan_fields(Remote& r, uint64_t obj, const char* key,
 // ---- main probe ----
 static NSString* runProbe(BOOL deep) {
     Remote r;
-    r.pid = find_pid("/UAGame");
-    if (!r.pid) r.pid = find_pid("/Arena");
+    // 1) enumerate with sysctl (works in sandbox, gives p_comm)
+    int nproc = 0;
+    char sample[1024];
+    memset(sample, 0, sizeof(sample));
+    r.pid = find_pid_sysctl("UAGame", &nproc, sample, sizeof(sample));
+    L(@"step1a sysctl procs=%d sample: %s", nproc, sample);
+    if (!r.pid) {
+        // 2) fall back to libproc (needs path access, may be denied)
+        r.pid = find_pid("/UAGame");
+        if (!r.pid) r.pid = find_pid("/Arena");
+        if (r.pid) L(@"step1b libproc fallback hit pid=%d", r.pid);
+    }
     L(@"step1 target pid = %d", r.pid);
-    if (!r.pid) { L(@"no game process; start the game first"); return gLog; }
+    if (!r.pid) { L(@"no game process found (is the game running?)"); return gLog; }
 
     kern_return_t kr = task_for_pid(mach_task_self(), r.pid, &r.task);
     L(@"step2 task_for_pid -> %s (%d)", mach_error_string(kr), kr);
