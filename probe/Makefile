@@ -17,6 +17,6 @@ ARProbe_FILES = main.mm
 ARProbe_CFLAGS = -fobjc-arc -std=c++17
 ARProbe_FRAMEWORKS = UIKit Foundation
 ARProbe_INSTALL_PATH = /Applications
-ARProbe_CODESIGN_FLAGS = -Sentitlements.plist
+# NO_ENTITLEMENTS: v6 故意不带 entitlement，先证明能启动
 
 include $(THEOS_MAKE_PATH)/application.mk
