@@ -16,6 +16,9 @@
 #include <mach/mach.h>
 #include <mach/task_info.h>
 #include <sys/sysctl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -364,10 +367,57 @@ static NSString* runProbe(BOOL deep) {
     [b2 setTitle:@"2 Deep" forState:UIControlStateNormal];
     [b2 addTarget:self action:@selector(runDeep:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:b2];
+
+    [self startUdpListener];
 }
 
 - (void)runLight:(id)sender { [self start:NO]; }
 - (void)runDeep:(id)sender  { [self start:YES]; }
+
+// Listen on UDP 127.0.0.1:45999 for lines sent by the in-game probe dylib.
+// Loopback UDP works across sandboxes, so the injected dylib can report without
+// needing any file access outside the game container.
+- (void)startUdpListener {
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        int s = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s < 0) { dispatch_async(dispatch_get_main_queue(), ^{
+            self->_tv.text = @"udp socket failed"; }); return; }
+        int one = 1;
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_port = htons(45999);
+        a.sin_addr.s_addr = inet_addr("127.0.0.1");
+        if (bind(s, (struct sockaddr*)&a, sizeof(a)) != 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_tv.text = @"udp bind 45999 failed (port busy?)"; });
+            close(s);
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_tv.text = @"udp listening on 127.0.0.1:45999\nwaiting for in-game probe...\n"; });
+        for (;;) {
+            char buf[4096];
+            ssize_t n = recv(s, buf, sizeof(buf) - 1, 0);
+            if (n <= 0) continue;
+            buf[n] = 0;
+            NSString* line = [NSString stringWithUTF8String:buf];
+            if (!line) continue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self appendLine:line];
+            });
+        }
+    });
+}
+
+- (void)appendLine:(NSString*)line {
+    static int count = 0;
+    if (count++ > 400) return;              // keep the text view bounded
+    _tv.text = [_tv.text stringByAppendingFormat:@"\n%@", line];
+    NSRange r = NSMakeRange(_tv.text.length, 0);
+    [_tv scrollRangeToVisible:r];
+}
 
 - (void)start:(BOOL)deep {
     _tv.text = @"probing...";
