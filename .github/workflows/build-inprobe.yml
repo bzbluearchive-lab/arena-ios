@@ -1,0 +1,55 @@
+name: build-inprobe
+
+# 构建游戏内探针 dylib（ARInProbe.dylib）。
+# 用 TrollFools 注入到已安装的 Arena 里运行：读自己进程内存，不需要任何特权。
+# 输出经 UDP 127.0.0.1:45999 发回 ARProbe app 显示。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 theos 与 iOS SDK
+        run: |
+          set -e
+          export PATH="/opt/homebrew/bin:$PATH"
+          brew install ldid || brew upgrade ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+
+      - name: 构建 ARInProbe
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          export PATH="/opt/homebrew/bin:$PATH"
+          make -C inprobe
+          DYLIB=$(find inprobe/.theos/obj -name 'ARInProbe.dylib' | head -1)
+          test -n "$DYLIB" || { echo "FATAL: dylib not found"; exit 1; }
+          mkdir -p out
+          cp "$DYLIB" out/ARInProbe.dylib
+          ls -la out/
+          otool -hv out/ARInProbe.dylib | tail -3
+          echo "--- exported/undefined check ---"
+          nm -u out/ARInProbe.dylib | head -20 || true
+
+      - name: 打包
+        run: |
+          set -e
+          cd out
+          zip -q ARInProbe-dylib.zip ARInProbe.dylib
+          ls -la
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARInProbe-dylib
+          path: |
+            out/ARInProbe.dylib
+            out/ARInProbe-dylib.zip
+          if-no-files-found: error
