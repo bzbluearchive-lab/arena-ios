@@ -1,13 +1,22 @@
-// inprobe/main.mm - one-shot in-game probe (runs inside the game process)
+// inprobe/main.mm - one-shot in-game offset probe (runs inside the game process)
 //
-// The game (ACE) kills the injected dylib ~60s after entering a match, so this
-// must finish everything in a single pass:
-//   1. locate FNamePool by scanning the whole __DATA segment
-//   2. resolve GEngine class name (proves FName works)
-//   3. scan GEngine fields for objects (World / GameViewport / GameInstance)
-//   4. from World: find PersistentLevel (ULevel)
-//   5. from Level: find the Actors TArray, print first actors' class names
-//   6. from an actor: find SkeletalMeshComponent and its bone transforms
+// All offsets below come from static analysis of UAGame_1.0.249_decrypted and are
+// verified by the runtime log this file produces. ACE kills the dylib ~60s after
+// entering a match, so everything runs in a single pass starting at 12s.
+//
+// Chain used:
+//   GEngine (global 0x10dbf9a58)
+//     -> UEngine::GetWorldFromContextObject (fn 0x104cb57b8) -> UWorld*
+//        fallback: UEngine::GameViewport (0x788)
+//     -> UWorld::PersistentLevel (0x30) -> ULevel*
+//     -> ULevel::Actors (0x28) -> TArray<AActor*>
+//     -> ACharacter::Mesh (0x418) -> USkeletalMeshComponent*
+//     -> bone transforms TArray<FTransform> (0x30 stride) - located at runtime
+//
+// FName resolution (verified statically):
+//   FNamePool global 0x10d90d840 (struct in __bss, NOT a pointer)
+//   Entries.Blocks[] at +0xD8 ; entry header u16, bit0=wide, len=hdr>>6, text@+2
+//   id split: block = id>>16, byte offset = (id & 0xFFFF) * 2
 //
 // Output: <container>/Documents/inprobe.log + UDP 127.0.0.1:45999. Read-only.
 
@@ -26,12 +35,18 @@
 
 static const uint64_t kStaticBase = 0x100000000ULL;
 static const uint64_t kOffGEngine = 0x10dbf9a58ULL;
-static const uint64_t kOffGNames  = 0x10d90d840ULL;   // FNamePool global struct (__bss)
-static const uint32_t kGNamesBlocksOff = 0xD8;        // FNameEntryAllocator::Blocks[]
-static const int      kUdpPort   = 45999;
+static const uint64_t kOffGNames  = 0x10d90d840ULL;
+static const uint32_t kGNamesBlocksOff = 0xD8;
+static const uint64_t kOffGetWorld = 0x104cb57b8ULL;   // UEngine::GetWorldFromContextObject
 
-static uint64_t gBase = 0, gNames = 0;
-static int gStride = 2;
+static const uint32_t kOffEngineGameViewport = 0x788;
+static const uint32_t kOffWorldPersistentLevel = 0x30;
+static const uint32_t kOffLevelActors = 0x28;
+static const uint32_t kOffCharacterMesh = 0x418;
+
+static const int kUdpPort = 45999;
+
+static uint64_t gBase = 0, gNames = 0, gEngine = 0;
 static int gSock = -1;
 static struct sockaddr_in gAddr;
 static NSMutableString* gLog = nil;
@@ -42,7 +57,6 @@ static void flushFile(void) {
     if (p) [gLog writeToFile:[p stringByAppendingPathComponent:@"inprobe.log"]
                   atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
-
 static void L(NSString* fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString* s = [[NSString alloc] initWithFormat:fmt arguments:ap];
@@ -57,7 +71,7 @@ static void L(NSString* fmt, ...) {
     flushFile();
 }
 
-// ---- local memory reads (our own address space) ----
+// ---- memory ----
 static bool lrd(uint64_t a, void* out, size_t n) {
     if (!a || !out || !n) return false;
     vm_size_t got = 0;
@@ -66,14 +80,9 @@ static bool lrd(uint64_t a, void* out, size_t n) {
 }
 static uint64_t lrd64(uint64_t a) { uint64_t v = 0; return lrd(a, &v, 8) ? v : 0; }
 static uint32_t lrd32(uint64_t a) { uint32_t v = 0; return lrd(a, &v, 4) ? v : 0; }
-
 static bool ptr_ok(uint64_t p) { return p >= 0x100000000ULL && p < 0x8000000000ULL && (p & 7) == 0; }
 
 // ---- FName ----
-// FNameEntry layout (verified statically on this build):
-//   header = uint16 at entry+0, bit0 = wide, len = header >> 6 (10 bits)
-//   string at entry+2 ; entries are packed, addressed with 2-byte granularity
-//   id split: block = id >> 16 ; byte offset in block = (id & 0xFFFF) * 2
 static bool fname(uint32_t id, char* out, size_t cap) {
     if (!out || cap < 2) return false;
     out[0] = 0;
@@ -102,7 +111,7 @@ static bool fname(uint32_t id, char* out, size_t cap) {
 }
 static bool cls_of(uint64_t obj, char* out, size_t cap) {
     out[0] = 0;
-    uint64_t c = lrd64(obj + 0x10);
+    uint64_t c = lrd64(obj + 0x10);          // UObject::ClassPrivate
     return c ? fname(lrd32(c + 0x18), out, cap) : false;
 }
 static bool own_of(uint64_t obj, char* out, size_t cap) {
@@ -110,107 +119,35 @@ static bool own_of(uint64_t obj, char* out, size_t cap) {
     return fname(lrd32(obj + 0x18), out, cap);
 }
 
-// ---- FNamePool discovery: scan whole __DATA, try both header layouts ----
-__attribute__((unused)) static uint64_t find_gnames(void) {
-    const struct mach_header_64* mh = (const struct mach_header_64*)_dyld_get_image_header(0);
-    const uint8_t* p = (const uint8_t*)mh;
-    // vmaddr in load commands is the LINK-TIME address; add the slide to get the
-    // runtime address (slide = image header addr - 0x100000000)
-    const uint64_t slide = (uint64_t)mh - kStaticBase;
-    L(@"slide = 0x%llx", slide);
-    uint64_t segStart = 0, segEnd = 0;
-    {
-        const struct load_command* lc = (const struct load_command*)(p + sizeof(*mh));
-        for (uint32_t i = 0; i < mh->ncmds; i++) {
-            if (lc->cmd == LC_SEGMENT_64) {
-                const struct segment_command_64* s = (const struct segment_command_64*)lc;
-                if (strcmp(s->segname, "__DATA") == 0) { segStart = s->vmaddr + slide; segEnd = s->vmaddr + s->vmsize + slide; }
-            }
-            lc = (const struct load_command*)((const uint8_t*)lc + lc->cmdsize);
-        }
+// ---- bone array detection: TArray<FTransform>, stride 0x30 ----
+static bool looks_transform_array(uint64_t comp, uint64_t off, uint32_t* outNum) {
+    uint64_t data = lrd64(comp + off);
+    uint32_t num  = lrd32(comp + off + 8);
+    uint32_t max  = lrd32(comp + off + 12);
+    if (!ptr_ok(data) || num < 20 || num > 600 || max < num || max > num + 2048) return false;
+    uint8_t tf[0x30 * 3];
+    if (!lrd(data, tf, sizeof(tf))) return false;
+    for (int s = 0; s < 3; s++) {
+        float* f = (float*)(tf + 0x30 * s);
+        // FTransform: FQuat(16) + FVector Translation(12) + FVector Scale(12)
+        if (!(f[0] > -2 && f[0] < 2 && f[1] > -2 && f[1] < 2 &&
+              f[2] > -2 && f[2] < 2 && f[3] > -2 && f[3] < 2)) return false;
+        if (!(f[12] > 0.01f && f[12] < 100 && f[13] > 0.01f && f[13] < 100 &&
+              f[14] > 0.01f && f[14] < 100)) return false;
     }
-    if (!segStart) return 0;
-    L(@"gnames scan __DATA 0x%llx..0x%llx", segStart, segEnd);
-
-    // FNamePool::Entries.Blocks[] offset differs by platform: on Darwin FRWLock is
-    // pthread_rwlock_t (200 bytes) so Blocks lands near +0xD0, not +0x10.
-    static const int kBlockOffs[] = { 0xD0, 0xD8, 0x10, 0x18, 0x08, 0xC8, 0x108, 0x110 };
-    const int nOffs = (int)(sizeof(kBlockOffs) / sizeof(kBlockOffs[0]));
-    const size_t kChunk = 1u << 20;
-    int tried = 0;
-    uint64_t lastA = 0;
-
-    for (uint64_t base = segStart; base + 8 <= segEnd; base += kChunk) {
-        size_t n = (size_t)((segEnd - base) < kChunk ? (segEnd - base) : kChunk);
-        uint8_t* chunk = (uint8_t*)malloc(n);
-        if (!chunk) { L(@"oom"); return 0; }
-        if (!lrd(base, chunk, n)) { free(chunk); continue; }
-
-        for (size_t o = 0; o + 8 <= n; o += 8) {
-            for (int k = 0; k < nOffs; k++) {
-                size_t bo = o + kBlockOffs[k];
-                if (bo + 8 > n) continue;
-                uint64_t b0;
-                memcpy(&b0, chunk + bo, 8);
-                if (!ptr_ok(b0)) continue;
-                if (++tried > 3000000) { L(@"gnames: cap"); free(chunk); return 0; }
-                char probe[24];
-                if (!lrd(b0, probe, sizeof(probe))) continue;
-                for (int st = 2; st <= 4; st += 2) {
-                    int hdr = (st == 2) ? 2 : 4;
-                    if (memcmp(probe + hdr, "None", 4) == 0) {
-                        gStride = st;
-                        L(@"GNames = 0x%llx (blocksOff=0x%x stride=%d slot=0x%llx)",
-                          base + o, kBlockOffs[k], st, base + o);
-                        free(chunk);
-                        return base + o;
-                    }
-                }
-            }
-        }
-        free(chunk);
-        lastA = base;
-    }
-    L(@"gnames scan ended at 0x%llx", lastA);    L(@"gnames not found (tried=%d)", tried);
-    return 0;
+    *outNum = num;
+    return true;
 }
 
-// ---- chain discovery ----
-static void scan_fields_for(uint64_t obj, uint64_t maxOff, const char* want, const char* tag) {
-    for (uint64_t off = 0; off < maxOff; off += 8) {
-        uint64_t q = lrd64(obj + off);
-        if (!ptr_ok(q)) continue;
-        char c[128];
-        if (!cls_of(q, c, sizeof(c))) continue;
-        if (strstr(c, want)) {
-            char o[128] = {0};
-            own_of(q, o, sizeof(o));
-            L(@"[%s] +0x%llx -> 0x%llx class=%s name=%s", tag, off, q, c, o);
-        }
-    }
-}
-
-// find a TArray<ptr> inside obj: {Data,Num,Max} with plausible Num
-static void find_ptr_array(uint64_t obj, uint64_t maxOff, const char* tag) {
-    for (uint64_t off = 0; off + 16 < maxOff; off += 8) {
-        uint64_t data = lrd64(obj + off);
-        uint32_t num  = lrd32(obj + off + 8);
-        uint32_t max  = lrd32(obj + off + 12);
-        if (!ptr_ok(data) || num == 0 || num > 20000 || max < num || max > num + 4096) continue;
-        uint64_t e0 = lrd64(data);
-        if (!ptr_ok(e0)) continue;
-        char c0[128] = {0}, o0[128] = {0};
-        if (!cls_of(e0, c0, sizeof(c0))) continue;
-        if (strcmp(c0, "Object") == 0 || c0[0] == 0) continue;
-        own_of(e0, o0, sizeof(o0));
-        L(@"[%s] TArray +0x%llx  Num=%u Max=%u  [0]=%s/%s", tag, off, num, max, c0, o0);
-        // dump a few more
-        for (int k = 1; k < 4 && k < (int)num; k++) {
-            uint64_t ek = lrd64(data + (uint64_t)k * 8);
-            char ck[128] = {0};
-            if (ptr_ok(ek) && cls_of(ek, ck, sizeof(ck))) L(@"    [%d] %s", k, ck);
-        }
-    }
+// ---- world acquisition ----
+static uint64_t world_via_engine_fn(void) {
+    uint64_t fn = gBase + (kOffGetWorld - kStaticBase);
+    if (!fn) return 0;
+    typedef uint64_t (*getworld_t)(uint64_t, uint64_t, int);
+    getworld_t f = (getworld_t)fn;
+    uint64_t w = 0;
+    @try { w = f(gEngine, gEngine, 0); } @catch (...) { w = 0; }
+    return ptr_ok(w) ? w : 0;
 }
 
 __attribute__((constructor))
@@ -224,232 +161,112 @@ static void inprobe_init(void) {
 
         gBase = (uint64_t)_dyld_get_image_header(0);
 
-        // Try to load the probing logic from the app's Documents first: if dlopen of
-        // an unsigned dylib is permitted on this device, future iterations only need
-        // a small file dropped into Documents (no 2.7 GB repack per round).
+        // optional hot-reload of logic from Documents (cheap iteration if allowed)
         {
             NSString* docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
             NSString* ext = [docs stringByAppendingPathComponent:@"probe2.dylib"];
             if ([[NSFileManager defaultManager] fileExistsAtPath:ext]) {
                 void* h = dlopen([ext UTF8String], RTLD_NOW);
-                if (h) { L(@"external probe2.dylib loaded (%s)", dlerror() ?: "ok"); }
-                else   { L(@"external dlopen failed: %s", dlerror() ?: "?"); }
+                if (h) L(@"external probe2.dylib loaded");
+                else   L(@"external dlopen failed: %s", dlerror() ?: "?");
             }
         }
 
-        L(@"=== inprobe v7 pid=%d base=0x%llx ===", getpid(), gBase);
+        L(@"=== inprobe v9 pid=%d base=0x%llx slide=0x%llx ===", getpid(), gBase, gBase - kStaticBase);
 
-        // engine needs time; ACE kills us around 60s, so start at 12s and be quick
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            uint64_t engine = lrd64(gBase + (kOffGEngine - kStaticBase));
-            L(@"GEngine = 0x%llx (vtable 0x%llx)", engine, lrd64(engine));
-            if (!engine) { L(@"no engine yet"); return; }
+            gNames  = gBase + (kOffGNames  - kStaticBase);
+            gEngine = lrd64(gBase + (kOffGEngine - kStaticBase));
+            L(@"GNames=0x%llx GEngine=0x%llx", gNames, gEngine);
+            if (!gEngine) { L(@"no engine"); return; }
 
-            gNames = gBase + (kOffGNames - kStaticBase);   // fixed global, no scan needed
-            L(@"GNames = 0x%llx (BlocksOff=0x%x)", gNames, kGNamesBlocksOff);
-            if (gNames) {
-                char e[128] = {0};
-                if (cls_of(engine, e, sizeof(e))) L(@"GEngine class = %s", e);
-            }
+            char nm[160];
+            memset(nm, 0, sizeof(nm));
+            if (cls_of(gEngine, nm, sizeof(nm))) L(@"GEngine class=%s", nm);
+            memset(nm, 0, sizeof(nm));
+            if (own_of(gEngine, nm, sizeof(nm))) L(@"GEngine name=%s", nm);
 
-            // 1) GEngine -> World / GameViewport / GameInstance
-            L(@"--- scan GEngine 0x0..0x1400 ---");
-            scan_fields_for(engine, 0x1400, "World", "GEngine");
-            scan_fields_for(engine, 0x1400, "Viewport", "GEngine");
-            scan_fields_for(engine, 0x1400, "GameInstance", "GEngine");
-
-            // Fallback that does not need FName: any field pointing at an object
-            // whose vtable lives inside the image is a UObject.
-            if (!gNames) {
-                L(@"--- fallback: engine fields with vtable in image ---");
-                uint64_t imgLo = gBase, imgHi = gBase + 0x14000000ULL;
-                for (uint64_t off = 0; off < 0x1400; off += 8) {
-                    uint64_t q = lrd64(engine + off);
-                    if (!ptr_ok(q)) continue;
-                    uint64_t vt = lrd64(q);
-                    if (vt < imgLo || vt >= imgHi) continue;
-                    L(@"+0x%llx -> 0x%llx vt=0x%llx", off, q, vt);
+            // ---- world ----
+            uint64_t world = world_via_engine_fn();
+            L(@"world via GetWorldFromContextObject = 0x%llx", world);
+            if (!world) {
+                uint64_t vp = lrd64(gEngine + kOffEngineGameViewport);
+                L(@"fallback GameViewport(+0x%x) = 0x%llx", kOffEngineGameViewport, vp);
+                if (ptr_ok(vp)) {
+                    memset(nm, 0, sizeof(nm));
+                    if (cls_of(vp, nm, sizeof(nm))) L(@"  viewport class=%s", nm);
                 }
             }
+            if (!world) { L(@"=== no world ==="); return; }
+            memset(nm, 0, sizeof(nm));
+            if (cls_of(world, nm, sizeof(nm))) L(@"world class=%s", nm);
 
-            // 2) from each World-ish field, look for Level
-            for (uint64_t off = 0; off < 0x1400; off += 8) {
-                uint64_t q = lrd64(engine + off);
-                if (!ptr_ok(q)) continue;
-                char c[128];
-                if (!cls_of(q, c, sizeof(c))) continue;
-                if (strcmp(c, "World") != 0) continue;
-                L(@"=== World at GEngine+0x%llx -> 0x%llx ===", off, q);
-                scan_fields_for(q, 0x800, "Level", "World");
-                for (uint64_t o2 = 0; o2 < 0x800; o2 += 8) {
-                    uint64_t lv = lrd64(q + o2);
-                    if (!ptr_ok(lv)) continue;
-                    char c2[128];
-                    if (!cls_of(lv, c2, sizeof(c2))) continue;
-                    if (strcmp(c2, "Level") != 0) continue;
-                    L(@"=== Level at World+0x%llx -> 0x%llx ===", o2, lv);
-                    find_ptr_array(lv, 0x600, "Level");
-                    // actor -> mesh
-                    uint64_t data = lrd64(lv + 0x0);   // filled below by scan
-                    (void)data;
-                    for (uint64_t o3 = 0; o3 < 0x600; o3 += 8) {
-                        uint64_t d = lrd64(lv + o3);
-                        uint32_t n = lrd32(lv + o3 + 8);
-                        uint32_t mx = lrd32(lv + o3 + 12);
-                        if (!ptr_ok(d) || n < 5 || n > 20000 || mx < n || mx > n + 4096) continue;
-                        uint64_t a0 = lrd64(d);
-                        if (!ptr_ok(a0)) continue;
-                        char ac[128] = {0};
-                        if (!cls_of(a0, ac, sizeof(ac))) continue;
-                        if (!strstr(ac, "Actor") && !strstr(ac, "Character")) continue;
-                        L(@"=== Actors array at Level+0x%llx Num=%u first=%s ===", o3, n, ac);
-                        scan_fields_for(a0, 0x800, "SkeletalMesh", "Actor");
-                        scan_fields_for(a0, 0x800, "Mesh", "Actor");
-                        break;
-                    }
+            // ---- level ----
+            uint64_t level = lrd64(world + kOffWorldPersistentLevel);
+            L(@"PersistentLevel(world+0x%x) = 0x%llx", kOffWorldPersistentLevel, level);
+            if (!ptr_ok(level)) { L(@"=== no level ==="); return; }
+            memset(nm, 0, sizeof(nm));
+            if (cls_of(level, nm, sizeof(nm))) L(@"level class=%s", nm);
+
+            // ---- actors ----
+            uint64_t data = lrd64(level + kOffLevelActors);
+            uint32_t num  = lrd32(level + kOffLevelActors + 8);
+            uint32_t max  = lrd32(level + kOffLevelActors + 12);
+            L(@"Actors(level+0x%x) data=0x%llx Num=%u Max=%u", kOffLevelActors, data, num, max);
+            if (!ptr_ok(data) || num == 0 || num > 40000) { L(@"=== bad actors ==="); return; }
+
+            // class distribution of the first 200 actors
+            int withMesh = 0, boneFound = 0;
+            uint32_t limit = num < 200 ? num : 200;
+            for (uint32_t i = 0; i < limit; i++) {
+                uint64_t act = lrd64(data + (uint64_t)i * 8);
+                if (!ptr_ok(act)) continue;
+                char ac[160];
+                memset(ac, 0, sizeof(ac));
+                if (!cls_of(act, ac, sizeof(ac))) continue;
+                if (i < 8) {
+                    char ao[160];
+                    memset(ao, 0, sizeof(ao));
+                    own_of(act, ao, sizeof(ao));
+                    L(@"[A%u] 0x%llx class=%s name=%s", i, act, ac, ao);
                 }
-            }
-            // ---- name-free structural discovery ----
-            // A UWorld holds TArray<ULevel*> (tiny Num) and a ULevel holds
-            // TArray<AActor*> (large Num, many distinct vtables). Walk engine
-            // fields one level down and report such arrays with their numbers.
-            L(@"--- structural scan (no names needed) ---");
-            uint64_t imgLo2 = gBase, imgHi2 = gBase + 0x14000000ULL;
-            for (uint64_t eo = 0; eo < 0x1400; eo += 8) {
-                uint64_t obj = lrd64(engine + eo);
-                if (!ptr_ok(obj)) continue;
-                uint64_t vt = lrd64(obj);
-                if (vt < imgLo2 || vt >= imgHi2) continue;
 
-                for (uint64_t ao = 0; ao + 16 < 0x1000; ao += 8) {
-                    uint64_t data = lrd64(obj + ao);
-                    uint32_t num  = lrd32(obj + ao + 8);
-                    uint32_t max  = lrd32(obj + ao + 12);
-                    if (!ptr_ok(data) || num < 8 || num > 40000 || max < num || max > num + 8192) continue;
-                    uint64_t e0 = lrd64(data);
-                    if (!ptr_ok(e0)) continue;
-                    uint64_t v0 = lrd64(e0);
-                    if (v0 < imgLo2 || v0 >= imgHi2) continue;
+                uint64_t mesh = lrd64(act + kOffCharacterMesh);
+                if (!ptr_ok(mesh)) continue;
+                char mc[160];
+                memset(mc, 0, sizeof(mc));
+                if (!cls_of(mesh, mc, sizeof(mc))) continue;
+                withMesh++;
 
-                    // count distinct vtables in the first 64 elements
-                    uint64_t seen[8];
-                    int nseen = 0;
-                    uint32_t lim = num < 64 ? num : 64;
-                    for (uint32_t k = 0; k < lim && nseen < 8; k++) {
-                        uint64_t ek = lrd64(data + (uint64_t)k * 8);
-                        if (!ptr_ok(ek)) continue;
-                        uint64_t vk = lrd64(ek);
-                        if (vk < imgLo2 || vk >= imgHi2) continue;
-                        bool dup = false;
-                        for (int s = 0; s < nseen; s++) if (seen[s] == vk) { dup = true; break; }
-                        if (!dup) seen[nseen++] = vk;
-                    }
-                    L(@"[S] E+0x%llx obj=0x%llx +0x%llx Num=%u Max=%u distinctVT=%d vt0=0x%llx",
-                      eo, obj, ao, num, max, nseen, v0);
-
-                    // one more level: look for a big array inside the element
-                    for (uint64_t bo = 0; bo + 16 < 0x1000; bo += 8) {
-                        uint64_t d2 = lrd64(e0 + bo);
-                        uint32_t n2 = lrd32(e0 + bo + 8);
-                        uint32_t m2 = lrd32(e0 + bo + 12);
-                        if (!ptr_ok(d2) || n2 < 8 || n2 > 40000 || m2 < n2 || m2 > n2 + 8192) continue;
-                        uint64_t f0 = lrd64(d2);
-                        if (!ptr_ok(f0)) continue;
-                        uint64_t vf = lrd64(f0);
-                        if (vf < imgLo2 || vf >= imgHi2) continue;
-                        L(@"[S2]   elem+0x%llx inner Num=%u Max=%u vt=0x%llx", bo, n2, m2, vf);
-                    }
+                // bone array: narrowed windows from static analysis first, then wide
+                uint32_t bn = 0;
+                uint64_t hit = 0;
+                for (uint64_t off = 0x858; off < 0x908; off += 8) {
+                    if (looks_transform_array(mesh, off, &bn)) { hit = off; break; }
                 }
-            }
-
-            // ================= deep scan: actor -> component -> bones =================
-            // No names needed. FTransform is 0x30 bytes: FQuat(16) + FVector(12) + FVector(12).
-            // A skeletal mesh component holds TArray<FTransform> with Num in the 40..400 range.
-            L(@"--- deep scan: bone arrays (FTransform stride 0x30) ---");
-
-            int actorArrays = 0;
-            for (uint64_t eo = 0; eo < 0x1400 && actorArrays < 4; eo += 8) {
-                uint64_t world = lrd64(engine + eo);
-                if (!ptr_ok(world)) continue;
-                uint64_t wvt = lrd64(world);
-                if (wvt < imgLo2 || wvt >= imgHi2) continue;
-
-                for (uint64_t ao = 0; ao + 16 < 0x1000; ao += 8) {
-                    uint64_t data = lrd64(world + ao);
-                    uint32_t num  = lrd32(world + ao + 8);
-                    uint32_t max  = lrd32(world + ao + 12);
-                    if (!ptr_ok(data) || num < 8 || num > 40000 || max < num || max > num + 8192) continue;
-                    uint64_t e0 = lrd64(data);
-                    if (!ptr_ok(e0)) continue;
-                    uint64_t v0 = lrd64(e0);
-                    if (v0 < imgLo2 || v0 >= imgHi2) continue;
-
-                    // distinct vtables -> actor-like array?
-                    uint64_t seen[8]; int nseen = 0;
-                    uint32_t lim = num < 64 ? num : 64;
-                    for (uint32_t k = 0; k < lim && nseen < 8; k++) {
-                        uint64_t ek = lrd64(data + (uint64_t)k * 8);
-                        if (!ptr_ok(ek)) continue;
-                        uint64_t vk = lrd64(ek);
-                        if (vk < imgLo2 || vk >= imgHi2) continue;
-                        bool dup = false;
-                        for (int s = 0; s < nseen; s++) if (seen[s] == vk) { dup = true; break; }
-                        if (!dup) seen[nseen++] = vk;
-                    }
-                    if (nseen < 3) continue;             // actors come in many classes
-                    actorArrays++;
-                    L(@"[A] GEngine+0x%llx -> 0x%llx  arr+0x%llx Num=%u distinctVT=%d", eo, world, ao, num, nseen);
-
-                    // inspect up to 3 actors
-                    for (uint32_t ai = 0; ai < 3 && ai < num; ai++) {
-                        uint64_t act = lrd64(data + (uint64_t)ai * 8);
-                        if (!ptr_ok(act)) continue;
-                        uint64_t avt = lrd64(act);
-                        if (avt < imgLo2 || avt >= imgHi2) continue;
-                        L(@"[A%d] actor=0x%llx vt=0x%llx", ai, act, avt);
-
-                        // components: objects inside the actor
-                        int comps = 0;
-                        for (uint64_t co = 0; co < 0x1000 && comps < 40; co += 8) {
-                            uint64_t comp = lrd64(act + co);
-                            if (!ptr_ok(comp)) continue;
-                            uint64_t cvt = lrd64(comp);
-                            if (cvt < imgLo2 || cvt >= imgHi2) continue;
-                            comps++;
-
-                            // does this component hold a bone transform array?
-                            for (uint64_t bo = 0; bo + 16 < 0x1000; bo += 8) {
-                                uint64_t bd = lrd64(comp + bo);
-                                uint32_t bn = lrd32(comp + bo + 8);
-                                uint32_t bm = lrd32(comp + bo + 12);
-                                if (!ptr_ok(bd) || bn < 20 || bn > 600 || bm < bn || bm > bn + 1024) continue;
-                                // verify 3 transforms look like FTransform (quat + pos + scale)
-                                uint8_t tf[0x30 * 3];
-                                if (!lrd(bd, tf, sizeof(tf))) continue;
-                                float* f0 = (float*)(tf);
-                                float* f1 = (float*)(tf + 0x30);
-                                float* f2 = (float*)(tf + 0x60);
-                                bool okq = true;
-                                float* fs[3] = { f0, f1, f2 };
-                                for (int s2 = 0; s2 < 3 && okq; s2++) {
-                                    float x = fs[s2][0], y = fs[s2][1], z = fs[s2][2], w = fs[s2][3];
-                                    if (!(x > -2 && x < 2 && y > -2 && y < 2 && z > -2 && z < 2 && w > -2 && w < 2)) okq = false;
-                                    float sx = fs[s2][12], sy = fs[s2][13], sz = fs[s2][14];
-                                    if (!(sx > 0.01f && sx < 100 && sy > 0.01f && sy < 100 && sz > 0.01f && sz < 100)) okq = false;
-                                }
-                                if (!okq) continue;
-                                L(@"[B]   comp+0x%llx boneArray Num=%u Max=%u pos=(%.1f,%.1f,%.1f)",
-                                  bo, bn, bm, f0[4], f0[5], f0[6]);
-                            }
-                        }
-                        L(@"[A%d] components=%d", ai, comps);
-                    }
-                    if (actorArrays >= 4) break;
+                if (!hit) for (uint64_t off = 0x9c8; off < 0xb20; off += 8) {
+                    if (looks_transform_array(mesh, off, &bn)) { hit = off; break; }
                 }
+                if (!hit) for (uint64_t off = 0x100; off < 0x1000; off += 8) {
+                    if (off >= 0x858 && off < 0x908) continue;
+                    if (off >= 0x9c8 && off < 0xb20) continue;
+                    if (looks_transform_array(mesh, off, &bn)) { hit = off; break; }
+                }
+                if (hit) {
+                    boneFound++;
+                    uint64_t bd = lrd64(mesh + hit);
+                    uint8_t tf[0x30];
+                    lrd(bd, tf, sizeof(tf));
+                    float* f = (float*)tf;
+                    L(@"[B] actor[%u] mesh=0x%llx(%s) boneOff=0x%llx Num=%u rootPos=(%.1f,%.1f,%.1f)",
+                      i, mesh, mc, hit, bn, f[4], f[5], f[6]);
+                } else if (withMesh <= 6) {
+                    L(@"[M] actor[%u] mesh=0x%llx(%s) no transform array", i, mesh, mc);
+                }
+                if (boneFound >= 6) break;
             }
-            if (actorArrays == 0) L(@"[A] no multi-vtable array found");
-
+            L(@"summary: actors=%u scanned=%u withMesh=%d boneArrays=%d", num, limit, withMesh, boneFound);
             L(@"=== done ===");
         });
     }
