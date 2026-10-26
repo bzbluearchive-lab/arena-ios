@@ -286,6 +286,59 @@ static void inprobe_init(void) {
                     }
                 }
             }
+            // ---- name-free structural discovery ----
+            // A UWorld holds TArray<ULevel*> (tiny Num) and a ULevel holds
+            // TArray<AActor*> (large Num, many distinct vtables). Walk engine
+            // fields one level down and report such arrays with their numbers.
+            L(@"--- structural scan (no names needed) ---");
+            uint64_t imgLo2 = gBase, imgHi2 = gBase + 0x14000000ULL;
+            for (uint64_t eo = 0; eo < 0x1400; eo += 8) {
+                uint64_t obj = lrd64(engine + eo);
+                if (!ptr_ok(obj)) continue;
+                uint64_t vt = lrd64(obj);
+                if (vt < imgLo2 || vt >= imgHi2) continue;
+
+                for (uint64_t ao = 0; ao + 16 < 0x1000; ao += 8) {
+                    uint64_t data = lrd64(obj + ao);
+                    uint32_t num  = lrd32(obj + ao + 8);
+                    uint32_t max  = lrd32(obj + ao + 12);
+                    if (!ptr_ok(data) || num < 8 || num > 40000 || max < num || max > num + 8192) continue;
+                    uint64_t e0 = lrd64(data);
+                    if (!ptr_ok(e0)) continue;
+                    uint64_t v0 = lrd64(e0);
+                    if (v0 < imgLo2 || v0 >= imgHi2) continue;
+
+                    // count distinct vtables in the first 64 elements
+                    uint64_t seen[8];
+                    int nseen = 0;
+                    uint32_t lim = num < 64 ? num : 64;
+                    for (uint32_t k = 0; k < lim && nseen < 8; k++) {
+                        uint64_t ek = lrd64(data + (uint64_t)k * 8);
+                        if (!ptr_ok(ek)) continue;
+                        uint64_t vk = lrd64(ek);
+                        if (vk < imgLo2 || vk >= imgHi2) continue;
+                        bool dup = false;
+                        for (int s = 0; s < nseen; s++) if (seen[s] == vk) { dup = true; break; }
+                        if (!dup) seen[nseen++] = vk;
+                    }
+                    L(@"[S] E+0x%llx obj=0x%llx +0x%llx Num=%u Max=%u distinctVT=%d vt0=0x%llx",
+                      eo, obj, ao, num, max, nseen, v0);
+
+                    // one more level: look for a big array inside the element
+                    for (uint64_t bo = 0; bo + 16 < 0x1000; bo += 8) {
+                        uint64_t d2 = lrd64(e0 + bo);
+                        uint32_t n2 = lrd32(e0 + bo + 8);
+                        uint32_t m2 = lrd32(e0 + bo + 12);
+                        if (!ptr_ok(d2) || n2 < 8 || n2 > 40000 || m2 < n2 || m2 > n2 + 8192) continue;
+                        uint64_t f0 = lrd64(d2);
+                        if (!ptr_ok(f0)) continue;
+                        uint64_t vf = lrd64(f0);
+                        if (vf < imgLo2 || vf >= imgHi2) continue;
+                        L(@"[S2]   elem+0x%llx inner Num=%u Max=%u vt=0x%llx", bo, n2, m2, vf);
+                    }
+                }
+            }
+
             L(@"=== done ===");
         });
     }
