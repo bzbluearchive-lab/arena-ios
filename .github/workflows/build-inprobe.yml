@@ -29,7 +29,9 @@ jobs:
           export THEOS=$HOME/theos
           export PATH="/opt/homebrew/bin:$PATH"
           make -C inprobe
-          DYLIB=$(find inprobe/.theos/obj -name 'ARInProbe.dylib' | head -1)
+          # 排除 .dSYM 里的 DWARF 文件（filetype=MH_DSYM，ldid 无法签名）
+          DYLIB=$(find inprobe/.theos/obj -name 'ARInProbe.dylib' -not -path '*.dSYM/*' | head -1)
+          echo "picked dylib: $DYLIB"
           test -n "$DYLIB" || { echo "FATAL: dylib not found"; exit 1; }
           mkdir -p out
           cp "$DYLIB" out/ARInProbe.dylib
