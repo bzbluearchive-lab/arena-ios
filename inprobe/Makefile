@@ -11,7 +11,7 @@ include $(THEOS)/makefiles/common.mk
 
 LIBRARY_NAME = ARInProbe
 
-ARInProbe_FILES = main.mm
+ARInProbe_FILES = main.mm rebind.c
 ARInProbe_CFLAGS = -fobjc-arc -std=c++17
 ARInProbe_FRAMEWORKS = Foundation
 ARInProbe_LDFLAGS = -Wl,-undefined,dynamic_lookup
