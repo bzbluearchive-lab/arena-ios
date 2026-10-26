@@ -111,7 +111,7 @@ static bool own_of(uint64_t obj, char* out, size_t cap) {
 }
 
 // ---- FNamePool discovery: scan whole __DATA, try both header layouts ----
-static uint64_t find_gnames(void) {
+__attribute__((unused)) static uint64_t find_gnames(void) {
     const struct mach_header_64* mh = (const struct mach_header_64*)_dyld_get_image_header(0);
     const uint8_t* p = (const uint8_t*)mh;
     // vmaddr in load commands is the LINK-TIME address; add the slide to get the
