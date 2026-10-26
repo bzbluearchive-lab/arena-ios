@@ -123,37 +123,46 @@ static uint64_t find_gnames(void) {
     if (!segStart) return 0;
     L(@"gnames scan __DATA 0x%llx..0x%llx", segStart, segEnd);
 
-    // __DATA is fully mapped in our own address space: walk it in 1MB blocks
-    // with direct memory access (vm_read per 8 bytes would be ~4.5M syscalls).
+    // FNamePool::Entries.Blocks[] offset differs by platform: on Darwin FRWLock is
+    // pthread_rwlock_t (200 bytes) so Blocks lands near +0xD0, not +0x10.
+    static const int kBlockOffs[] = { 0xD0, 0xD8, 0x10, 0x18, 0x08, 0xC8, 0x108, 0x110 };
+    const int nOffs = (int)(sizeof(kBlockOffs) / sizeof(kBlockOffs[0]));
     const size_t kChunk = 1u << 20;
     int tried = 0;
+    uint64_t lastA = 0;
+
     for (uint64_t base = segStart; base + 8 <= segEnd; base += kChunk) {
         size_t n = (size_t)((segEnd - base) < kChunk ? (segEnd - base) : kChunk);
         uint8_t* chunk = (uint8_t*)malloc(n);
         if (!chunk) { L(@"oom"); return 0; }
         if (!lrd(base, chunk, n)) { free(chunk); continue; }
+
         for (size_t o = 0; o + 8 <= n; o += 8) {
-            uint64_t v;
-            memcpy(&v, chunk + o, 8);
-            if (!ptr_ok(v)) continue;
-            if (++tried > 400000) { L(@"gnames: cap 400000"); return 0; }
-            uint64_t b0 = lrd64(v + 0x10);            // Entries.Blocks[0]
-            if (!ptr_ok(b0)) continue;
-            char probe[24];
-            if (!lrd(b0, probe, sizeof(probe))) continue;
-            for (int st = 2; st <= 4; st += 2) {
-                int hdr = (st == 2) ? 2 : 4;
-                if (memcmp(probe + hdr, "None", 4) == 0) {
-                    gStride = st;
-                    L(@"GNames = 0x%llx (stride=%d, slot=0x%llx)", v, st, base + o);
-                    free(chunk);
-                    return v;
+            for (int k = 0; k < nOffs; k++) {
+                size_t bo = o + kBlockOffs[k];
+                if (bo + 8 > n) continue;
+                uint64_t b0;
+                memcpy(&b0, chunk + bo, 8);
+                if (!ptr_ok(b0)) continue;
+                if (++tried > 3000000) { L(@"gnames: cap"); free(chunk); return 0; }
+                char probe[24];
+                if (!lrd(b0, probe, sizeof(probe))) continue;
+                for (int st = 2; st <= 4; st += 2) {
+                    int hdr = (st == 2) ? 2 : 4;
+                    if (memcmp(probe + hdr, "None", 4) == 0) {
+                        gStride = st;
+                        L(@"GNames = 0x%llx (blocksOff=0x%x stride=%d slot=0x%llx)",
+                          base + o, kBlockOffs[k], st, base + o);
+                        free(chunk);
+                        return base + o;
+                    }
                 }
             }
         }
         free(chunk);
+        lastA = base;
     }
-    L(@"gnames not found (tried=%d)", tried);
+    L(@"gnames scan ended at 0x%llx", lastA);    L(@"gnames not found (tried=%d)", tried);
     return 0;
 }
 
