@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <dlfcn.h>
+extern "C" int hide_self_image(void);
 
 static const uint64_t kStaticBase = 0x100000000ULL;
 static const uint64_t kOffGEngine = 0x10dbf9a58ULL;
@@ -160,6 +161,30 @@ static void inprobe_init(void) {
         gAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
         gBase = (uint64_t)_dyld_get_image_header(0);
+
+        // ---- mode switch: Documents/probe_mode.txt ----
+        //   "noop"    : do nothing but log (test whether injection itself is detected)
+        //   "stealth" : hide our image from dyld enumeration, then probe
+        //   (missing) : same as stealth
+        {
+            NSString* docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            NSString* modePath = [docs stringByAppendingPathComponent:@"probe_mode.txt"];
+            NSString* mode = @"stealth";
+            if ([[NSFileManager defaultManager] fileExistsAtPath:modePath]) {
+                NSString* s = [NSString stringWithContentsOfFile:modePath encoding:NSUTF8StringEncoding error:nil];
+                if (s) {
+                    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    if (s.length) mode = s;
+                }
+            }
+            L(@"mode = %@", mode);
+            if ([mode isEqualToString:@"noop"]) {
+                L(@"noop mode: no hooks, no probing, no threads");
+                return;
+            }
+            int patched = hide_self_image();
+            L(@"image hiding: patched %d pointers (selfIndex=%u)", patched, 0u);
+        }
 
         // optional hot-reload of logic from Documents (cheap iteration if allowed)
         {
