@@ -105,13 +105,17 @@ static bool own_of(uint64_t obj, char* out, size_t cap) {
 static uint64_t find_gnames(void) {
     const struct mach_header_64* mh = (const struct mach_header_64*)_dyld_get_image_header(0);
     const uint8_t* p = (const uint8_t*)mh;
+    // vmaddr in load commands is the LINK-TIME address; add the slide to get the
+    // runtime address (slide = image header addr - 0x100000000)
+    const uint64_t slide = (uint64_t)mh - kStaticBase;
+    L(@"slide = 0x%llx", slide);
     uint64_t segStart = 0, segEnd = 0;
     {
         const struct load_command* lc = (const struct load_command*)(p + sizeof(*mh));
         for (uint32_t i = 0; i < mh->ncmds; i++) {
             if (lc->cmd == LC_SEGMENT_64) {
                 const struct segment_command_64* s = (const struct segment_command_64*)lc;
-                if (strcmp(s->segname, "__DATA") == 0) { segStart = s->vmaddr; segEnd = s->vmaddr + s->vmsize; }
+                if (strcmp(s->segname, "__DATA") == 0) { segStart = s->vmaddr + slide; segEnd = s->vmaddr + s->vmsize + slide; }
             }
             lc = (const struct load_command*)((const uint8_t*)lc + lc->cmdsize);
         }
@@ -125,10 +129,12 @@ static uint64_t find_gnames(void) {
     int tried = 0;
     for (uint64_t base = segStart; base + 8 <= segEnd; base += kChunk) {
         size_t n = (size_t)((segEnd - base) < kChunk ? (segEnd - base) : kChunk);
-        const uint8_t* q = (const uint8_t*)base;      // mapped, safe to read
+        uint8_t* chunk = (uint8_t*)malloc(n);
+        if (!chunk) { L(@"oom"); return 0; }
+        if (!lrd(base, chunk, n)) { free(chunk); continue; }
         for (size_t o = 0; o + 8 <= n; o += 8) {
             uint64_t v;
-            memcpy(&v, q + o, 8);
+            memcpy(&v, chunk + o, 8);
             if (!ptr_ok(v)) continue;
             if (++tried > 400000) { L(@"gnames: cap 400000"); return 0; }
             uint64_t b0 = lrd64(v + 0x10);            // Entries.Blocks[0]
@@ -140,10 +146,12 @@ static uint64_t find_gnames(void) {
                 if (memcmp(probe + hdr, "None", 4) == 0) {
                     gStride = st;
                     L(@"GNames = 0x%llx (stride=%d, slot=0x%llx)", v, st, base + o);
+                    free(chunk);
                     return v;
                 }
             }
         }
+        free(chunk);
     }
     L(@"gnames not found (tried=%d)", tried);
     return 0;
@@ -217,6 +225,20 @@ static void inprobe_init(void) {
             scan_fields_for(engine, 0x1400, "World", "GEngine");
             scan_fields_for(engine, 0x1400, "Viewport", "GEngine");
             scan_fields_for(engine, 0x1400, "GameInstance", "GEngine");
+
+            // Fallback that does not need FName: any field pointing at an object
+            // whose vtable lives inside the image is a UObject.
+            if (!gNames) {
+                L(@"--- fallback: engine fields with vtable in image ---");
+                uint64_t imgLo = gBase, imgHi = gBase + 0x14000000ULL;
+                for (uint64_t off = 0; off < 0x1400; off += 8) {
+                    uint64_t q = lrd64(engine + off);
+                    if (!ptr_ok(q)) continue;
+                    uint64_t vt = lrd64(q);
+                    if (vt < imgLo || vt >= imgHi) continue;
+                    L(@"+0x%llx -> 0x%llx vt=0x%llx", off, q, vt);
+                }
+            }
 
             // 2) from each World-ish field, look for Level
             for (uint64_t off = 0; off < 0x1400; off += 8) {
