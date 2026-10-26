@@ -120,7 +120,7 @@ static bool own_of(uint64_t obj, char* out, size_t cap) {
 }
 
 // ---- bone array detection: TArray<FTransform>, stride 0x30 ----
-static bool looks_transform_array(uint64_t comp, uint64_t off, uint32_t* outNum) {
+__attribute__((unused)) static bool looks_transform_array(uint64_t comp, uint64_t off, uint32_t* outNum) {
     uint64_t data = lrd64(comp + off);
     uint32_t num  = lrd32(comp + off + 8);
     uint32_t max  = lrd32(comp + off + 12);
