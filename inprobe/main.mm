@@ -26,6 +26,8 @@
 
 static const uint64_t kStaticBase = 0x100000000ULL;
 static const uint64_t kOffGEngine = 0x10dbf9a58ULL;
+static const uint64_t kOffGNames  = 0x10d90d840ULL;   // FNamePool global struct (__bss)
+static const uint32_t kGNamesBlocksOff = 0xD8;        // FNameEntryAllocator::Blocks[]
 static const int      kUdpPort   = 45999;
 
 static uint64_t gBase = 0, gNames = 0;
@@ -68,26 +70,32 @@ static uint32_t lrd32(uint64_t a) { uint32_t v = 0; return lrd(a, &v, 4) ? v : 0
 static bool ptr_ok(uint64_t p) { return p >= 0x100000000ULL && p < 0x8000000000ULL && (p & 7) == 0; }
 
 // ---- FName ----
-static bool fname(uint32_t idx, char* out, size_t cap) {
+// FNameEntry layout (verified statically on this build):
+//   header = uint16 at entry+0, bit0 = wide, len = header >> 6 (10 bits)
+//   string at entry+2 ; entries are packed, addressed with 2-byte granularity
+//   id split: block = id >> 16 ; byte offset in block = (id & 0xFFFF) * 2
+static bool fname(uint32_t id, char* out, size_t cap) {
     if (!out || cap < 2) return false;
     out[0] = 0;
-    if (!gNames || (idx >> 16) >= 8192) return false;
-    uint64_t block = lrd64(gNames + 0x10 + (uint64_t)(idx >> 16) * 8);
-    if (!block) return false;
-    uint64_t e = block + (uint64_t)gStride * (idx & 0xFFFF);
+    if (!gNames) return false;
+    uint32_t blk = id >> 16;
+    if (blk >= 8192) return false;
+    uint64_t blkPtr = lrd64(gNames + kGNamesBlocksOff + (uint64_t)blk * 8);
+    if (!ptr_ok(blkPtr)) return false;
+    uint64_t entry = blkPtr + (uint64_t)(id & 0xFFFF) * 2;
     uint16_t h = 0;
-    if (!lrd(e, &h, 2)) return false;
-    uint32_t len = (h >> 1) & 0x3FF;
-    if (!len || len > 512) return false;
+    if (!lrd(entry, &h, 2)) return false;
+    uint32_t len = (h >> 6) & 0x3FF;
+    if (!len) { out[0] = 0; return true; }
     uint32_t n = (len < cap - 1) ? len : (uint32_t)(cap - 1);
     if (h & 1) {
         for (uint32_t i = 0; i < n; i++) {
             uint16_t ch = 0;
-            if (!lrd(e + 2 + (uint64_t)i * 2, &ch, 2)) { out[i] = 0; return i > 0; }
+            if (!lrd(entry + 2 + (uint64_t)i * 2, &ch, 2)) { out[i] = 0; return i > 0; }
             out[i] = (ch < 0x80) ? (char)ch : '?';
         }
     } else {
-        if (!lrd(e + 2, out, n)) return false;
+        if (!lrd(entry + 2, out, n)) return false;
     }
     out[n] = 0;
     return true;
@@ -238,7 +246,8 @@ static void inprobe_init(void) {
             L(@"GEngine = 0x%llx (vtable 0x%llx)", engine, lrd64(engine));
             if (!engine) { L(@"no engine yet"); return; }
 
-            gNames = find_gnames();
+            gNames = gBase + (kOffGNames - kStaticBase);   // fixed global, no scan needed
+            L(@"GNames = 0x%llx (BlocksOff=0x%x)", gNames, kGNamesBlocksOff);
             if (gNames) {
                 char e[128] = {0};
                 if (cls_of(engine, e, sizeof(e))) L(@"GEngine class = %s", e);
