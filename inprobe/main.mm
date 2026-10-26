@@ -339,6 +339,93 @@ static void inprobe_init(void) {
                 }
             }
 
+            // ================= deep scan: actor -> component -> bones =================
+            // No names needed. FTransform is 0x30 bytes: FQuat(16) + FVector(12) + FVector(12).
+            // A skeletal mesh component holds TArray<FTransform> with Num in the 40..400 range.
+            L(@"--- deep scan: bone arrays (FTransform stride 0x30) ---");
+
+            int actorArrays = 0;
+            for (uint64_t eo = 0; eo < 0x1400 && actorArrays < 4; eo += 8) {
+                uint64_t world = lrd64(engine + eo);
+                if (!ptr_ok(world)) continue;
+                uint64_t wvt = lrd64(world);
+                if (wvt < imgLo2 || wvt >= imgHi2) continue;
+
+                for (uint64_t ao = 0; ao + 16 < 0x1000; ao += 8) {
+                    uint64_t data = lrd64(world + ao);
+                    uint32_t num  = lrd32(world + ao + 8);
+                    uint32_t max  = lrd32(world + ao + 12);
+                    if (!ptr_ok(data) || num < 8 || num > 40000 || max < num || max > num + 8192) continue;
+                    uint64_t e0 = lrd64(data);
+                    if (!ptr_ok(e0)) continue;
+                    uint64_t v0 = lrd64(e0);
+                    if (v0 < imgLo2 || v0 >= imgHi2) continue;
+
+                    // distinct vtables -> actor-like array?
+                    uint64_t seen[8]; int nseen = 0;
+                    uint32_t lim = num < 64 ? num : 64;
+                    for (uint32_t k = 0; k < lim && nseen < 8; k++) {
+                        uint64_t ek = lrd64(data + (uint64_t)k * 8);
+                        if (!ptr_ok(ek)) continue;
+                        uint64_t vk = lrd64(ek);
+                        if (vk < imgLo2 || vk >= imgHi2) continue;
+                        bool dup = false;
+                        for (int s = 0; s < nseen; s++) if (seen[s] == vk) { dup = true; break; }
+                        if (!dup) seen[nseen++] = vk;
+                    }
+                    if (nseen < 3) continue;             // actors come in many classes
+                    actorArrays++;
+                    L(@"[A] GEngine+0x%llx -> 0x%llx  arr+0x%llx Num=%u distinctVT=%d", eo, world, ao, num, nseen);
+
+                    // inspect up to 3 actors
+                    for (uint32_t ai = 0; ai < 3 && ai < num; ai++) {
+                        uint64_t act = lrd64(data + (uint64_t)ai * 8);
+                        if (!ptr_ok(act)) continue;
+                        uint64_t avt = lrd64(act);
+                        if (avt < imgLo2 || avt >= imgHi2) continue;
+                        L(@"[A%d] actor=0x%llx vt=0x%llx", ai, act, avt);
+
+                        // components: objects inside the actor
+                        int comps = 0;
+                        for (uint64_t co = 0; co < 0x1000 && comps < 40; co += 8) {
+                            uint64_t comp = lrd64(act + co);
+                            if (!ptr_ok(comp)) continue;
+                            uint64_t cvt = lrd64(comp);
+                            if (cvt < imgLo2 || cvt >= imgHi2) continue;
+                            comps++;
+
+                            // does this component hold a bone transform array?
+                            for (uint64_t bo = 0; bo + 16 < 0x1000; bo += 8) {
+                                uint64_t bd = lrd64(comp + bo);
+                                uint32_t bn = lrd32(comp + bo + 8);
+                                uint32_t bm = lrd32(comp + bo + 12);
+                                if (!ptr_ok(bd) || bn < 20 || bn > 600 || bm < bn || bm > bn + 1024) continue;
+                                // verify 3 transforms look like FTransform (quat + pos + scale)
+                                uint8_t tf[0x30 * 3];
+                                if (!lrd(bd, tf, sizeof(tf))) continue;
+                                float* f0 = (float*)(tf);
+                                float* f1 = (float*)(tf + 0x30);
+                                float* f2 = (float*)(tf + 0x60);
+                                bool okq = true;
+                                float* fs[3] = { f0, f1, f2 };
+                                for (int s2 = 0; s2 < 3 && okq; s2++) {
+                                    float x = fs[s2][0], y = fs[s2][1], z = fs[s2][2], w = fs[s2][3];
+                                    if (!(x > -2 && x < 2 && y > -2 && y < 2 && z > -2 && z < 2 && w > -2 && w < 2)) okq = false;
+                                    float sx = fs[s2][12], sy = fs[s2][13], sz = fs[s2][14];
+                                    if (!(sx > 0.01f && sx < 100 && sy > 0.01f && sy < 100 && sz > 0.01f && sz < 100)) okq = false;
+                                }
+                                if (!okq) continue;
+                                L(@"[B]   comp+0x%llx boneArray Num=%u Max=%u pos=(%.1f,%.1f,%.1f)",
+                                  bo, bn, bm, f0[4], f0[5], f0[6]);
+                            }
+                        }
+                        L(@"[A%d] components=%d", ai, comps);
+                    }
+                    if (actorArrays >= 4) break;
+                }
+            }
+            if (actorArrays == 0) L(@"[A] no multi-vtable array found");
+
             L(@"=== done ===");
         });
     }
