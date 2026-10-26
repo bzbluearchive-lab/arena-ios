@@ -49,6 +49,9 @@ jobs:
           if [ ! -f Payload/ARProbe.app/Info.plist ]; then cp probe/Info.plist Payload/ARProbe.app/Info.plist; fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" Payload/ARProbe.app/Info.plist || true
+          # 让 app 的 Documents 出现在「文件」App，便于用数据线把 IPA 导入后交给 TrollStore
+          /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" Payload/ARProbe.app/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" Payload/ARProbe.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" Payload/ARProbe.app/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" Payload/ARProbe.app/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.local.arprobe.v$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ARProbe-v$VER" Payload/ARProbe.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleName ARProbe-v$VER" Payload/ARProbe.app/Info.plist || true
