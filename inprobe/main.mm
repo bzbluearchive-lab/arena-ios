@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 static const uint64_t kStaticBase = 0x100000000ULL;
 static const uint64_t kOffGEngine = 0x10dbf9a58ULL;
@@ -214,7 +215,21 @@ static void inprobe_init(void) {
         gAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
         gBase = (uint64_t)_dyld_get_image_header(0);
-        L(@"=== inprobe v3 pid=%d base=0x%llx ===", getpid(), gBase);
+
+        // Try to load the probing logic from the app's Documents first: if dlopen of
+        // an unsigned dylib is permitted on this device, future iterations only need
+        // a small file dropped into Documents (no 2.7 GB repack per round).
+        {
+            NSString* docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            NSString* ext = [docs stringByAppendingPathComponent:@"probe2.dylib"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:ext]) {
+                void* h = dlopen([ext UTF8String], RTLD_NOW);
+                if (h) { L(@"external probe2.dylib loaded (%s)", dlerror() ?: "ok"); }
+                else   { L(@"external dlopen failed: %s", dlerror() ?: "?"); }
+            }
+        }
+
+        L(@"=== inprobe v7 pid=%d base=0x%llx ===", getpid(), gBase);
 
         // engine needs time; ACE kills us around 60s, so start at 12s and be quick
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
