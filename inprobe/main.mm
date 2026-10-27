@@ -191,6 +191,7 @@ static void inprobe_init(void) {
             }
             // spoof: keep the image count identical, just rename ourselves to the
             // executable path (a name that is already whitelisted).
+            L(@"about to hide self image");
             int patched = hide_self_image(1, NULL);
             L(@"image hiding: patched %d pointers (spoof=1)", patched);
         }
