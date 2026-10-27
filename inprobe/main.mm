@@ -259,14 +259,60 @@ static void inprobe_init(void) {
             memset(nm, 0, sizeof(nm));
             if (cls_of(level, nm, sizeof(nm))) L(@"level class=%s", nm);
 
-            // ---- actors ----
-            uint64_t data = lrd64(level + kOffLevelActors);
-            uint32_t num  = lrd32(level + kOffLevelActors + 8);
-            uint32_t max  = lrd32(level + kOffLevelActors + 12);
-            L(@"Actors(level+0x%x) data=0x%llx Num=%u Max=%u", kOffLevelActors, data, num, max);
-            if (!ptr_ok(data) || num == 0 || num > 40000) { L(@"=== bad actors ==="); return; }
+            // ---- actors: scan ULevel fields for a TArray<AActor*> ----
+            // ULevel::Actors is NOT at 0x28 on this build (runtime returned garbage),
+            // so locate it by shape: {Data,Num,Max} with plausible Num and elements
+            // whose class names resolve through FName.
+            uint64_t bestData = 0, bestOff = 0;
+            uint32_t bestNum = 0;
+            for (uint64_t o = 0; o + 16 < 0x1000; o += 8) {
+                uint64_t d = lrd64(level + o);
+                uint32_t n = lrd32(level + o + 8);
+                uint32_t mx = lrd32(level + o + 12);
+                if (!ptr_ok(d) || n < 1 || n > 40000 || mx < n || mx > n + 65536) continue;
+                uint64_t e0 = lrd64(d);
+                if (!ptr_ok(e0)) continue;
+                char c0[160];
+                memset(c0, 0, sizeof(c0));
+                if (!cls_of(e0, c0, sizeof(c0))) continue;
+                if (c0[0] == 0 || strcmp(c0, "Object") == 0) continue;
 
-            // class distribution of the first 200 actors
+                // sample a few element classes to see whether it looks like actors
+                char s1[160] = {0}, s2[160] = {0};
+                uint64_t e1 = lrd64(d + 8);
+                if (ptr_ok(e1)) cls_of(e1, s1, sizeof(s1));
+                uint64_t e2 = lrd64(d + 16);
+                if (ptr_ok(e2)) cls_of(e2, s2, sizeof(s2));
+                L(@"[arr] level+0x%llx Num=%u Max=%u  [0]=%s [1]=%s [2]=%s", o, n, mx, c0, s1, s2);
+
+                if (n > bestNum) { bestNum = n; bestData = d; bestOff = o; }
+            }
+            if (!bestData) { L(@"=== no actor array found ==="); return; }
+            L(@"chosen actors: level+0x%llx Num=%u", bestOff, bestNum);
+
+            uint64_t data = bestData;
+            uint32_t num = bestNum;
+
+            // class histogram of the first 60 elements
+            {
+                char hist[6][64];
+                memset(hist, 0, sizeof(hist));
+                int cnt[6] = {0};
+                uint32_t lim = num < 60 ? num : 60;
+                for (uint32_t i = 0; i < lim; i++) {
+                    uint64_t a = lrd64(data + (uint64_t)i * 8);
+                    if (!ptr_ok(a)) continue;
+                    char c[64];
+                    memset(c, 0, sizeof(c));
+                    if (!cls_of(a, c, sizeof(c))) continue;
+                    for (int k = 0; k < 6; k++) {
+                        if (!hist[k][0]) { strncpy(hist[k], c, 63); cnt[k] = 1; break; }
+                        if (strcmp(hist[k], c) == 0) { cnt[k]++; break; }
+                    }
+                }
+                for (int k = 0; k < 6; k++) if (hist[k][0]) L(@"[hist] %-40s x%d", hist[k], cnt[k]);
+            }
+
             int withMesh = 0, boneFound = 0;
             uint32_t limit = num < 200 ? num : 200;
             for (uint32_t i = 0; i < limit; i++) {
@@ -275,7 +321,7 @@ static void inprobe_init(void) {
                 char ac[160];
                 memset(ac, 0, sizeof(ac));
                 if (!cls_of(act, ac, sizeof(ac))) continue;
-                if (i < 8) {
+                if (i < 6) {
                     char ao[160];
                     memset(ao, 0, sizeof(ao));
                     own_of(act, ao, sizeof(ao));
@@ -289,11 +335,6 @@ static void inprobe_init(void) {
                 if (!cls_of(mesh, mc, sizeof(mc))) continue;
                 withMesh++;
 
-                // Bone arrays verified statically on this build:
-                //   0x9B8 CachedComponentSpaceTransforms {Data,Num@0x9C0,Max@0x9C4}
-                //   0x940 BoneSpaceTransforms (live)     {Data,Num@0x948}
-                //   0x9A8 CachedBoneSpaceTransforms      {Data,Num@0x9B0}
-                // element = FTransform, 0x30 bytes: FQuat16 + Translation12 + Scale12
                 static const uint64_t kBoneOffs[] = { 0x9B8, 0x940, 0x9A8 };
                 uint32_t bn = 0;
                 uint64_t hit = 0;
@@ -308,13 +349,9 @@ static void inprobe_init(void) {
                     uint8_t tf[0x30];
                     memset(tf, 0, sizeof(tf));
                     lrd(bd, tf, sizeof(tf));
-                    float* f = (float*)tf;
-                    L(@"[B] actor[%u] mesh=0x%llx(%s) boneOff=0x%llx Num=%u bone0.quat=(%.2f,%.2f,%.2f,%.2f) bone0.pos=(%.1f,%.1f,%.1f)",
-                      i, mesh, mc, hit, bn, f[0], f[1], f[2], f[3], f[4], f[5], f[6]);
-
-                    // verify ComponentToWorld candidate (0x270 unproven): a real C2W must be a
-                    // unit-quaternion FTransform with sane scale, and its translation should be
-                    // within world bounds. Scan a window and report all plausible candidates.
+                    float* fp = (float*)tf;
+                    L(@"[B] actor[%u] mesh=0x%llx(%s) boneOff=0x%llx Num=%u bone0.pos=(%.1f,%.1f,%.1f)",
+                      i, mesh, mc, hit, bn, fp[4], fp[5], fp[6]);
                     for (uint64_t co = 0x200; co < 0x400; co += 0x10) {
                         uint8_t ct[0x30];
                         memset(ct, 0, sizeof(ct));
@@ -323,16 +360,13 @@ static void inprobe_init(void) {
                         float qn = g[0]*g[0] + g[1]*g[1] + g[2]*g[2] + g[3]*g[3];
                         if (!(qn > 0.9f && qn < 1.1f)) continue;
                         if (!(g[12] > 0.01f && g[12] < 100 && g[13] > 0.01f && g[13] < 100 && g[14] > 0.01f && g[14] < 100)) continue;
-                        if (!(g[4] > -2000000 && g[4] < 2000000 && g[5] > -2000000 && g[5] < 2000000 && g[6] > -2000000 && g[6] < 2000000)) continue;
                         if (g[4] == 0 && g[5] == 0 && g[6] == 0) continue;
-                        L(@"[C2W] mesh+0x%llx quat=(%.2f,%.2f,%.2f,%.2f) pos=(%.1f,%.1f,%.1f) scale=(%.2f,%.2f,%.2f)",
-                          co, g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[12], g[13], g[14]);
+                        L(@"[C2W] mesh+0x%llx pos=(%.1f,%.1f,%.1f) scale=(%.2f,%.2f,%.2f)",
+                          co, g[4], g[5], g[6], g[12], g[13], g[14]);
                     }
-                } else if (withMesh <= 6) {
-                    L(@"[M] actor[%u] mesh=0x%llx(%s) none of 0x9B8/0x940/0x9A8 has a valid array", i, mesh, mc);
-                }                if (boneFound >= 6) break;
-            }
-            L(@"summary: actors=%u scanned=%u withMesh=%d boneArrays=%d", num, limit, withMesh, boneFound);
+                }
+                if (boneFound >= 4) break;
+            }            L(@"summary: actors=%u scanned=%u withMesh=%d boneArrays=%d", num, limit, withMesh, boneFound);
             L(@"=== done ===");
         });
     }
