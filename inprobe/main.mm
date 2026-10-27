@@ -270,17 +270,7 @@ static void inprobe_init(void) {
                     }
                 }
             }
-            if (!world) {
-                L(@"=== no world ===");
-                static int t2 = 0;
-                dispatch_source_t tm = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-                dispatch_source_set_timer(tm, dispatch_time(DISPATCH_TIME_NOW, 15ull * NSEC_PER_SEC),
-                                          15ull * NSEC_PER_SEC, 5ull * NSEC_PER_SEC);
-                dispatch_source_set_event_handler(tm, ^{ t2++; L(@"alive t=%ds", t2 * 15); });
-                dispatch_resume(tm);
-                return;
-            }
+            if (!world) { L(@"=== no world ==="); return; }
             memset(nm, 0, sizeof(nm));
             if (cls_of(world, nm, sizeof(nm))) L(@"world class=%s", nm);
 
@@ -400,20 +390,6 @@ static void inprobe_init(void) {
                 if (boneFound >= 4) break;
             }            L(@"summary: actors=%u scanned=%u withMesh=%d boneArrays=%d", num, limit, withMesh, boneFound);
             L(@"=== done ===");
-
-            // ---- survival heartbeat: tells us exactly how long we stay alive ----
-            // ACE kills us around 60s today. If the log reaches t=600s the image
-            // hiding worked and we can move on to matches.
-            static int tick = 0;
-            dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-            dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 15ull * NSEC_PER_SEC),
-                                      15ull * NSEC_PER_SEC, 5ull * NSEC_PER_SEC);
-            dispatch_source_set_event_handler(timer, ^{
-                tick++;
-                L(@"alive t=%ds", tick * 15);
-            });
-            dispatch_resume(timer);
         });
     }
 }
