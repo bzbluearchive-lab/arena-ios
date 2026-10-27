@@ -53,7 +53,10 @@ static void find_self(void) {
             lc = (const struct load_command*)((const uint8_t*)lc + lc->cmdsize);
         }
         if (!vmaddr) continue;
-        uint64_t addr = (uint64_t)anchor;
+        // vmaddr is a LINK-TIME address: subtract the slide before comparing,
+        // otherwise our own image is never matched (this bug shipped once).
+        intptr_t sl = _dyld_get_image_vmaddr_slide(i);
+        uint64_t addr = (uint64_t)anchor - (uint64_t)sl;
         if (addr >= vmaddr && addr < vmaddr + vmsize) {
             g_self_header = mh;
             g_self_index = i;
@@ -129,13 +132,13 @@ static intptr_t (*orig_get_slide)(uint32_t) = NULL;
 
 // map a filtered index to the real index, skipping our own image
 static uint32_t real_index(uint32_t i) {
-    if (!g_self_found) return i;
+    if (!g_self_found || g_spoof) return i;
     return (i >= g_self_index) ? (i + 1) : i;
 }
 
 static uint32_t my_image_count(void) {
     uint32_t n = orig_image_count ? orig_image_count() : 0;
-    if (g_self_found && n > 0) n -= 1;
+    if (!g_spoof && g_self_found && n > 0) n -= 1;
     return n;
 }
 static const struct mach_header* my_get_header(uint32_t i) {
@@ -145,9 +148,17 @@ static const struct mach_header* my_get_header(uint32_t i) {
     if (r >= n) return NULL;
     return orig_get_header(r);
 }
+static char g_fake_name[512];
+static int  g_spoof = 1;      // 1 = keep count, spoof our name; 0 = drop ourselves
+
 static const char* my_get_name(uint32_t i) {
     if (!orig_get_name) return NULL;
     uint32_t n = orig_image_count ? orig_image_count() : 0;
+    if (g_spoof) {
+        if (g_self_found && i == g_self_index && g_fake_name[0]) return g_fake_name;
+        if (i >= n) return NULL;
+        return orig_get_name(i);
+    }
     uint32_t r = real_index(i);
     if (r >= n) return NULL;
     return orig_get_name(r);
@@ -161,9 +172,21 @@ static intptr_t my_get_slide(uint32_t i) {
 }
 
 // ---- public entry ----
-int hide_self_image(void) {
+int hide_self_image(int spoofMode, const char* fakeName) {
+    g_spoof = spoofMode ? 1 : 0;
     find_self();
     if (!g_self_found) return -1;
+
+    // choose a boring, whitelisted-looking name so a per-image whitelist check passes
+    g_fake_name[0] = 0;
+    if (g_spoof) {
+        if (fakeName && fakeName[0]) {
+            strncpy(g_fake_name, fakeName, sizeof(g_fake_name) - 1);
+        } else {
+            const char* n0 = _dyld_get_image_name(0);   // the game executable
+            if (n0) strncpy(g_fake_name, n0, sizeof(g_fake_name) - 1);
+        }
+    }
 
     struct rebinding binds[4];
     memset(binds, 0, sizeof(binds));
