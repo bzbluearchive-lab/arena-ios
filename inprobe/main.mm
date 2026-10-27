@@ -42,7 +42,7 @@ static const uint64_t kOffGetWorld = 0x104cb57b8ULL;   // UEngine::GetWorldFromC
 
 static const uint32_t kOffEngineGameViewport = 0x788;
 static const uint32_t kOffWorldPersistentLevel = 0x30;
-static const uint32_t kOffLevelActors = 0x28;
+// ULevel::Actors is NOT 0x28 on this build; located by scanning at runtime.\n__attribute__((unused)) static const uint32_t kOffLevelActors = 0x28;
 static const uint32_t kOffCharacterMesh = 0x418;
 
 static const int kUdpPort = 45999;
