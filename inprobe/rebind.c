@@ -56,7 +56,7 @@ static void find_self(void) {
             }
             lc = (const struct load_command*)((const uint8_t*)lc + lc->cmdsize);
         }
-        if (!vmaddr) continue;
+        if (vmsize == 0) continue;   // dylibs report __TEXT vmaddr == 0 - do not skip them
         // vmaddr is a LINK-TIME address: subtract the slide before comparing,
         // otherwise our own image is never matched (this bug shipped once).
         intptr_t sl = _dyld_get_image_vmaddr_slide(i);
