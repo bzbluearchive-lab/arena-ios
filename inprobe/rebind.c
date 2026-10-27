@@ -19,6 +19,10 @@
 
 #define REBIND_MAX 16
 
+// declared early: used by the index-mapping helpers below
+static char g_fake_name[512];
+static int  g_spoof = 1;   // 1 = keep image count, spoof our name; 0 = drop ourselves
+
 struct rebinding {
     const char* name;
     void* replacement;
@@ -148,9 +152,6 @@ static const struct mach_header* my_get_header(uint32_t i) {
     if (r >= n) return NULL;
     return orig_get_header(r);
 }
-static char g_fake_name[512];
-static int  g_spoof = 1;      // 1 = keep count, spoof our name; 0 = drop ourselves
-
 static const char* my_get_name(uint32_t i) {
     if (!orig_get_name) return NULL;
     uint32_t n = orig_image_count ? orig_image_count() : 0;
