@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <dlfcn.h>
-extern "C" int hide_self_image(void);
+extern "C" int hide_self_image(int spoofMode, const char* fakeName);
 
 static const uint64_t kStaticBase = 0x100000000ULL;
 static const uint64_t kOffGEngine = 0x10dbf9a58ULL;
@@ -182,8 +182,10 @@ static void inprobe_init(void) {
                 L(@"noop mode: no hooks, no probing, no threads");
                 return;
             }
-            int patched = hide_self_image();
-            L(@"image hiding: patched %d pointers (selfIndex=%u)", patched, 0u);
+            // spoof: keep the image count identical, just rename ourselves to the
+            // executable path (a name that is already whitelisted).
+            int patched = hide_self_image(1, NULL);
+            L(@"image hiding: patched %d pointers (spoof=1)", patched);
         }
 
         // optional hot-reload of logic from Documents (cheap iteration if allowed)
@@ -213,14 +215,37 @@ static void inprobe_init(void) {
             if (own_of(gEngine, nm, sizeof(nm))) L(@"GEngine name=%s", nm);
 
             // ---- world ----
+            uint64_t vp = lrd64(gEngine + kOffEngineGameViewport);
+            L(@"GameViewport(+0x%x) = 0x%llx", kOffEngineGameViewport, vp);
+            if (ptr_ok(vp)) {
+                memset(nm, 0, sizeof(nm));
+                if (cls_of(vp, nm, sizeof(nm))) L(@"  viewport class=%s", nm);
+            }
+
             uint64_t world = world_via_engine_fn();
-            L(@"world via GetWorldFromContextObject = 0x%llx", world);
-            if (!world) {
-                uint64_t vp = lrd64(gEngine + kOffEngineGameViewport);
-                L(@"fallback GameViewport(+0x%x) = 0x%llx", kOffEngineGameViewport, vp);
-                if (ptr_ok(vp)) {
-                    memset(nm, 0, sizeof(nm));
-                    if (cls_of(vp, nm, sizeof(nm))) L(@"  viewport class=%s", nm);
+            L(@"world via GetWorldFromContextObject(engine,engine,0) = 0x%llx", world);
+
+            // 2nd try: pass the viewport as the context object
+            if (!world && ptr_ok(vp)) {
+                uint64_t fn = gBase + (kOffGetWorld - kStaticBase);
+                typedef uint64_t (*getworld_t)(uint64_t, uint64_t, int);
+                uint64_t w2 = ((getworld_t)fn)(gEngine, vp, 0);
+                L(@"world via GetWorldFromContextObject(engine,viewport,0) = 0x%llx", w2);
+                if (ptr_ok(w2)) world = w2;
+            }
+
+            // 3rd try: scan viewport fields for an object whose class is World
+            if (!world && ptr_ok(vp)) {
+                for (uint64_t o = 0; o < 0x800; o += 8) {
+                    uint64_t q = lrd64(vp + o);
+                    if (!ptr_ok(q)) continue;
+                    char c[160];
+                    memset(c, 0, sizeof(c));
+                    if (!cls_of(q, c, sizeof(c))) continue;
+                    if (strcmp(c, "World") == 0 || strstr(c, "World") != NULL) {
+                        L(@"[world-scan] viewport+0x%llx -> 0x%llx class=%s", o, q, c);
+                        if (!world && strcmp(c, "World") == 0) world = q;
+                    }
                 }
             }
             if (!world) { L(@"=== no world ==="); return; }
