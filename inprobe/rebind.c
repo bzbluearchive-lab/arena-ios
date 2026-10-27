@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
@@ -105,6 +107,15 @@ static int rebind_in_image(const struct mach_header_64* mh, intptr_t slide,
                 if (type != S_NON_LAZY_SYMBOL_POINTERS && type != S_LAZY_SYMBOL_POINTERS) continue;
                 uint32_t count = (uint32_t)(sect->size / sizeof(void*));
                 void** slots = (void**)(base + sect->offset);
+                // __got often lives in __DATA_CONST (read-only after fixups). Writing
+                // there without mprotect is an instant crash at launch.
+                {
+                    uintptr_t pg = (uintptr_t)slots & ~(uintptr_t)(getpagesize() - 1);
+                    size_t len = ((uintptr_t)slots + sect->size) - pg;
+                    if (mprotect((void*)pg, len, PROT_READ | PROT_WRITE) != 0) {
+                        continue;   // cannot make it writable: skip this section
+                    }
+                }
                 for (uint32_t k = 0; k < count; k++) {
                     uint32_t symIdx = indirect[sect->reserved1 + k];
                     if (symIdx == INDIRECT_SYMBOL_ABS || symIdx == INDIRECT_SYMBOL_LOCAL) continue;
