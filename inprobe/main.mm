@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include "bootlog.h"
 extern "C" int hide_self_image(int spoofMode, const char* fakeName);
 
 static const uint64_t kStaticBase = 0x100000000ULL;
@@ -154,6 +155,11 @@ static uint64_t world_via_engine_fn(void) {
 __attribute__((constructor))
 static void inprobe_init(void) {
     @autoreleasepool {
+        // FIRST: capture crashes and record that we even started. If boot.log is
+        // missing entirely, the dylib never got to run (dyld/load problem, not us).
+        install_crash_handlers();
+        bootlog("[boot] constructor entered pid=%d", getpid());
+        bootlog("[boot] bootlog path resolved: %s", g_bootPath);
         gSock = socket(AF_INET, SOCK_DGRAM, 0);
         memset(&gAddr, 0, sizeof(gAddr));
         gAddr.sin_family = AF_INET;
@@ -161,6 +167,7 @@ static void inprobe_init(void) {
         gAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
         gBase = (uint64_t)_dyld_get_image_header(0);
+        bootlog("[boot] base=0x%llx images=%u", (unsigned long long)gBase, _dyld_image_count());
 
         // ---- mode switch: Documents/probe_mode.txt ----
         //   "noop"    : do nothing but log (test whether injection itself is detected)
@@ -192,7 +199,9 @@ static void inprobe_init(void) {
             // spoof: keep the image count identical, just rename ourselves to the
             // executable path (a name that is already whitelisted).
             L(@"about to hide self image");
+            bootlog("[boot] calling hide_self_image");
             int patched = hide_self_image(1, NULL);
+            bootlog("[boot] hide returned %d", patched);
             L(@"image hiding: patched %d pointers (spoof=1)", patched);
         }
 
@@ -226,6 +235,7 @@ static void inprobe_init(void) {
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            bootlog("[boot] probe started");
             gNames  = gBase + (kOffGNames  - kStaticBase);
             gEngine = lrd64(gBase + (kOffGEngine - kStaticBase));
             L(@"GNames=0x%llx GEngine=0x%llx", gNames, gEngine);
@@ -245,7 +255,9 @@ static void inprobe_init(void) {
                 if (cls_of(vp, nm, sizeof(nm))) L(@"  viewport class=%s", nm);
             }
 
+            bootlog("[boot] engine=0x%llx", (unsigned long long)gEngine);
             uint64_t world = world_via_engine_fn();
+            bootlog("[boot] world=0x%llx", (unsigned long long)world);
             L(@"world via GetWorldFromContextObject(engine,engine,0) = 0x%llx", world);
 
             // 2nd try: pass the viewport as the context object
